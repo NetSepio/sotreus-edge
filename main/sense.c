@@ -591,6 +591,7 @@ void sense_init(void)
 
 static void send_cmd(uint8_t c)
 {
+    if (!s_cmd) return; /* Mesh boot: the pipeline was never started */
     xQueueSend(s_cmd, &c, portMAX_DELAY);
 }
 

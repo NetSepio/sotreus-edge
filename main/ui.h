@@ -6,3 +6,6 @@
 #pragma once
 
 void ui_init(void);
+
+/** Shows the restart screen until the Edge restarts. to_mode: "MESH" / "AWARE", or NULL. */
+void ui_show_restart(const char *to_mode);

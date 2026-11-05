@@ -96,8 +96,8 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `info` | | `info` (section 5) |
 | `status` | | `status`: uptime, clock, battery (`present`, `source`: `battery` \| `usb` \| `unknown`), link, ble, awareness, log, mesh |
 | `get_config` | | `config` (section 6) |
-| `set_config` | `config`: partial config object | new `config`; applies without reboot |
-| `set_mode` | `mode`: `awareness` \| `mesh` | new `config` |
+| `set_config` | `config`: partial config object | new `config`; applies without a restart, except a mode change |
+| `set_mode` | `mode`: `awareness` \| `mesh` | new `config`; the Edge restarts into that mode about 2.5 s later (HTTP sessions end) |
 | `set_time` | `unix_ms`, optional `source`, optional `tz_offset_min` | sets wall time (the phone should send it on every connect) and the local time zone shown on the display |
 | `wifi_list` / `wifi_scan` | | `known` (no passwords), `nearby` (networks heard in the last 5 min: scans plus sniffed beacons, with `age_s`), `scanning`; `wifi_scan` also starts a scan. Poll `wifi_list` until `scanning` is false (5-20 s). While a client uses the Edge's access point, the scan goes one channel at a time so the client stays connected. |
 | `wifi_add` | `ssid`, `password` (empty = open) | |
@@ -120,7 +120,10 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `mesh_set_position` | `lat`, `lon`, optional `alt` | the position used in `client` position mode (from the phone) |
 | `mesh_node` | `id`, optional `favorite`, optional `ignored` | ignoring also adds the node to `mesh.ignore` in config |
 | `mesh_channel_url` | optional `url`, optional `replace` (default true) | `url`: the channels as a Meshtastic link (`https://meshtastic.org/e/#…`). With `url`, applies a link first: `replace` swaps all channels and the LoRa preset, region and hop limit; otherwise its channels are added. |
-| `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table (up to 64, with key, favourite, ignored, device and environment telemetry, neighbours, reported position) / last 32 messages (with `pki`, `reply_id`, `reaction`) / radio state, role, public key, channel use and own airtime, polite hold, store & forward routers heard, paxcounter counts, counters |
+| `mesh_tak` | | `tak`: ATAK users heard (callsign, uid, team, role, battery, plugin `v1`/`v2`, `compressed`, `reported_position`, `ago_s`) |
+| `mesh_tak_chat` | `text` (1-200 bytes), `channel` | sends TAK GeoChat to all chat rooms (TAKPacketV2, port 78) |
+| `mesh_tak_position` | `channel` | sends our position as a TAK position report; error when there is no position or the channel's precision is 0 |
+| `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table (up to 64, with key, favourite, ignored, device and environment telemetry, neighbours, reported position) / last 32 messages (with `pki`, `reply_id`, `reaction`) / radio state, role, public key, channel use and own airtime, polite hold, store & forward routers heard, paxcounter counts, `admin` (mode, requests, refused), `store_forward_server` (stored, capacity, who it is sending to), `mqtt` (state, broker, uplinked, downlinked, last error), counters |
 | `mesh_new_identity` | | new random `node_id` and a new key pair |
 | `regions` | | region and preset names |
 | `ctx_get` / `ctx_set` | `ctx`: object (≤ 2 KB) | Context-page settings, stored on the Edge as an opaque JSON object owned by the web app (area rounded to 0.1°, enabled sources) |
@@ -139,7 +142,10 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `obs` | a record was written | WebSocket: a binary frame with the raw record. Bluetooth: `seq`, `type`; read it with `sync`. |
 | `seen` | a device was first heard in a new sighting window | `kind`, `addr`, `rssi`, `label?`, `uptime_ms` |
 | `rssi` | during `watch`, at most 4 Hz | `kind`, `addr`, `rssi`, `channel?`, `uptime_ms`, `unix_ms?` |
-| `mode` | mode changed | `mode`, `awareness_paused` |
+| `mode` | a mode change was saved | `mode`, `restarting: true` |
+| `mesh_admin` | a remote admin request arrived | `from`, `request` (AdminMessage field), `outcome` (`answered`, `applied`, `refused`, …) |
+| `mesh_tak` | a TAK packet arrived | `from` |
+| `mesh_rhw` | a remote hardware request arrived | `from`, `request` (HardwareMessage type), `outcome` |
 | `sync_done` | end of a BLE sync | `ok`, `sent`, `next`, `head`, `more` |
 | `mesh_rx` | text addressed to us or the channel | `msg` |
 | `mesh_tx` | our message progressed | `id`, `status`: `sent` \| `delivered` \| `relayed` \| `no_ack` \| `no_relay_heard` \| `failed` (`reason`, Meshtastic routing error) |
@@ -299,9 +305,22 @@ second firmware.
            "canned": ["OK", "On my way", "Need assistance", "All fine here"],
            "lora": {"freq_offset_hz": 0, "override_freq_mhz": 0, "tx_enabled": true, "override_duty_cycle": false,
                     "rx_boosted": true, "ignore_mqtt": false, "ok_to_mqtt": false},
-           "ignore": []}
+           "ignore": [],
+           "admin": {"enabled": true, "mode": "open", "admin_channel": false, "keys": []},
+           "remote_hardware": {"enabled": false, "allow_undefined_pins": false,
+                               "pins": [{"gpio": 47, "name": "relay", "type": "write"}]},
+           "store_forward": {"server": false, "heartbeat": true, "return_max": 25, "return_window_min": 240},
+           "mqtt": {"enabled": false, "address": "mqtt.meshtastic.org", "username": "meshdev", "password_set": true,
+                    "encryption": true, "json": false, "tls": false, "root": "", "proxy_to_client": false,
+                    "map": {"enabled": false, "interval_s": 3600, "precision": 14, "location": false}},
+           "tak": {"team": "default", "role": "default"},
+           "audio": {"enabled": false, "ptt_gpio": -1, "bitrate": "default",
+                     "i2s_ws": -1, "i2s_sd": -1, "i2s_din": -1, "i2s_sck": -1}}
 }
 ```
+
+Each channel also has `uplink` and `downlink` (MQTT). The MQTT password is
+write-only: send `password` to change it; reads show `password_set`.
 
 * `link` is one of `auto`, `ap`, `sta` or `off`.
 * `mesh.region` is a Meshtastic region name, or `UNSET`. While it is
@@ -324,13 +343,22 @@ second firmware.
 * `licensed: true` turns off all encryption (amateur radio rules); the long
   name should then be the call sign.
 * Settings saved by firmware before config version 2 are migrated on boot.
+* `admin.mode` is `open` (any node; the default the owner chose, with a
+  warning on the setup page) or `keys` (only PKI messages from one of up to 3
+  listed public keys). `admin_channel: true` also accepts Meshtastic's legacy
+  channel named `admin`. Remote hardware follows the same rule and also
+  accepts the legacy channel named `gpio`. GPIOs the board uses are refused.
+* The module settings (`admin`, `remote_hardware`, `store_forward`, `mqtt`,
+  `audio`, channel `uplink`/`downlink`) are stored apart from the main
+  config (NVS blob `meshmod`).
 
 ## 7. Meshtastic compatibility
 
 On air the Edge matches Meshtastic 2.x: region frequency slots (djb2 of the
 channel name), sync word 0x2B, 16-symbol preamble, the 16-byte header with
 next-hop and relay-node bytes, AES-CTR with the channel key and nonce
-`packet_id(u64 LE) ‖ from(u32 LE) ‖ 0`, and the channel hash.
+`packet_id(u64 LE) ‖ from(u32 LE) ‖ 0`, and the channel hash. Other nodes see
+firmware level `2.5.0.5e0e` in its device metadata.
 
 Covered:
 
@@ -339,33 +367,72 @@ Covered:
   (canned) messages from the page or the PRG button.
 * **PKI.** An X25519 key pair is made on first boot and sent in node info.
   Direct messages to and from nodes whose key is known use
-  `SHA-256(X25519)` keys and AES-CCM (8-byte tag, 4-byte extra nonce), as in
-  Meshtastic 2.5+.
+  `SHA-256(X25519)` keys and AES-CCM (8-byte tag, 4-byte extra nonce).
 * **Routing.** Managed flooding with Meshtastic's SNR-weighted contention
-  window, next-hop learning from ACKs for direct messages, all roles and
-  rebroadcast modes, the ignore list, duty-cycle limits and a polite hold
-  while channel use is above 25 % or own airtime is above half the limit.
+  window, next-hop learning from ACKs, all roles and rebroadcast modes, the
+  ignore list, duty-cycle limits and a polite hold while channel use is above
+  25 % or own airtime is above half the limit.
 * **Node info, position and telemetry.** Node info with key and role,
-  position (fixed or from the phone, truncated per channel), device metrics
-  (battery or external power), and decoding of others' device and
-  environment telemetry.
-* **Modules.** Traceroute (as origin, relay and destination), neighbour
-  info, waypoints, range test, store & forward (client side), paxcounter
-  (counts only), detection sensor (GPIO), serial text bridge (UART1),
-  external notification (GPIO or LED), lost-and-found beacon.
-* **Channel links.** Export and import of `https://meshtastic.org/e/#…`.
+  position (fixed or from the phone, truncated per channel), device metrics,
+  and decoding of others' device and environment telemetry.
+* **Remote admin (port 6).** Get and set owner, channels, config (device,
+  position, power, network, display, LoRa, Bluetooth, security, session key)
+  and module config (MQTT, serial, external notification, store & forward,
+  range test, telemetry, canned messages, audio, remote hardware, neighbour
+  info, ambient lighting, detection sensor, paxcounter), canned messages,
+  device metadata, connection status, remote hardware pins, ham mode, fixed
+  position, time, favourites, ignored nodes, node removal, shared contacts,
+  node-database reset, reboot, factory resets. Meshtastic 2.5 session
+  passkeys are required for every change (valid 300 s, refreshed every
+  150 s). Who may send is set by `admin.mode` (section 6). The private key and
+  the Wi-Fi password are never sent; the MQTT password and channel keys only
+  to a listed admin key. Network, security, MQTT, channel and remote hardware
+  changes, ham mode and factory resets always need a listed key (or the
+  admin channel). Changes apply 3 s after the reply, without a restart.
+* **Remote hardware (port 2).** Read, write and watch GPIOs listed in
+  settings (or any free GPIO when allowed); board pins are always refused.
+* **Store & forward.** Client (asks a router for history) and server: text on
+  readable channels, and the Edge's own channel messages, are kept in the
+  256 KB `sfdb` flash ring (about 1,000 messages, survives restarts). The
+  server answers `CLIENT_HISTORY` (and a direct "SF" text), `CLIENT_PING`,
+  `CLIENT_STATS` and `CLIENT_ABORT`, replays up to `return_max` messages from
+  the last `return_window_min` minutes one every 5 s under their original
+  sender and id, answers `ROUTER_BUSY` while serving someone else, and sends a
+  heartbeat every 15 minutes.
+* **MQTT.** While the Edge has joined Wi-Fi in Mesh mode: Meshtastic topics
+  `<root>/2/e/<channel>/<!gateway>` with `ServiceEnvelope`, uplink of packets
+  it sends and hears on uplink channels (others' only when they set OK to
+  MQTT), downlink into the mesh marked `via_mqtt` (hop limit capped to 1 on
+  the public broker), PKI topic, optional JSON uplink (not to the public
+  broker) and JSON `sendtext` downlink, map reports on `<root>/2/map/`, TLS
+  with the common CA bundle. Root defaults to `msh/<region>`.
+* **Modules.** Neighbour info, waypoints, range test, paxcounter (counts
+  only), detection sensor (GPIO), serial text bridge (UART1), external
+  notification (GPIO or LED), lost-and-found beacon.
+* **ATAK.** TAKPacket (port 72) and TAKPacketV2 (port 78, flags byte, `0xFF`
+  = uncompressed) are decoded for the ATAK user list and GeoChat; compressed
+  ones are relayed but not read. `TAK_TRACKER` sends its position as a TAK v2
+  position report (CoT `a-f-G-U-C`, how `h-e` for a fixed position, `m-g`
+  for one from the phone, uid `!<node id>`) at channel 0's position
+  precision, with `TAKConfig` team and role (defaults Cyan, Team Member).
+* **Channel links.** Export and import of `https://meshtastic.org/e/#…`,
+  including MQTT uplink/downlink flags.
 * **Persistence.** Nodes, messages and waypoints are saved to the `meshdb`
   partition every 15 minutes and before a restart.
 
-Not covered, and why:
+Not covered:
 
-* The Meshtastic phone API, so the Meshtastic app cannot connect. The Sotreus
-  app and the setup page are the clients.
-* MQTT and the IP tunnel: the Edge keeps its network link for the user, not
-  for a broker. It honours `ok_to_mqtt` and `ignore_mqtt` bits from others.
-* Remote admin and remote hardware: no other node may change this Edge.
-* The store & forward server role, audio and ATAK plugin: they need PSRAM or
-  hardware the Heltec V3 does not have.
+* The Meshtastic phone API (`ToRadio`/`FromRadio` over Bluetooth or TCP), so
+  the Meshtastic app cannot connect directly; remote admin from another node
+  works.
+* Audio: settings only, until a microphone, speaker, I2S codec and the
+  codec2 library are added. Received voice frames are counted.
+* Running ATAK itself: an ATAK phone still needs the Meshtastic Android app
+  (phone API) or the Sotreus app to bridge it to the mesh. Compressed TAK
+  packets (unishox2 / zstd) are relayed but not decompressed.
+* Custom LoRa modem parameters (bandwidth, spreading factor, coding rate
+  outside the presets), OTA over the mesh, files, displays and sensors the
+  Heltec V3 does not have.
 
 Its node number is random, not derived from a hardware address.
 

@@ -10,6 +10,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "edge_meshmod.h"
 #include "edge_util.h"
 #include "mesh_crypto.h"
 
@@ -19,6 +20,8 @@ static const char *NS = "edge";
 static SemaphoreHandle_t s_lock;
 static edge_config_t s_cfg;
 static edge_identity_t s_id;
+static edge_mesh_mod_t s_mod;
+static void mod_clamp(edge_mesh_mod_t *m);
 
 static void random_text(char *out, size_t len, const char *alphabet)
 {
@@ -301,6 +304,18 @@ esp_err_t edge_config_init(void)
         save_blob("cfg", &s_cfg, sizeof(s_cfg));
     }
     clamp(&s_cfg);
+    edge_mod_defaults(&s_mod);
+    esp_err_t me = load_blob("meshmod", &s_mod, sizeof(s_mod));
+    if (me == ESP_ERR_INVALID_SIZE && s_mod.version == 1) {
+        /* version 1 was shorter: fields added since keep their defaults */
+        s_mod.tak_team = s_mod.tak_role = 0;
+        s_mod.version = EDGE_MOD_VERSION;
+        save_blob("meshmod", &s_mod, sizeof(s_mod));
+    } else if (me != ESP_OK || s_mod.version != EDGE_MOD_VERSION) {
+        edge_mod_defaults(&s_mod);
+        save_blob("meshmod", &s_mod, sizeof(s_mod));
+    }
+    mod_clamp(&s_mod);
     ESP_LOGI(TAG, "boot #%lu, mode=%s", (unsigned long)s_id.boot_count,
              s_cfg.mode == EDGE_MODE_MESH ? "mesh" : "awareness");
     return ESP_OK;
@@ -495,6 +510,86 @@ esp_err_t edge_config_factory_reset(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = nvs_flash_erase();
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+/* ---- Mesh module settings ("meshmod") ------------------------------------------------ */
+
+void edge_mod_defaults(edge_mesh_mod_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    m->version = EDGE_MOD_VERSION;
+    m->admin_enabled = true;          /* open by default, as the owner chose; the page warns */
+    m->admin_mode = EDGE_ADMIN_OPEN;
+    m->admin_channel = false;
+    m->sf_enabled = false;
+    m->sf_heartbeat = true;
+    m->sf_return_max = 25;
+    m->sf_return_window_min = 240;
+    edge_strlcpy(m->mqtt_address, "mqtt.meshtastic.org", sizeof(m->mqtt_address));
+    edge_strlcpy(m->mqtt_username, "meshdev", sizeof(m->mqtt_username));
+    edge_strlcpy(m->mqtt_password, "large4cats", sizeof(m->mqtt_password));
+    m->mqtt_encryption = true;
+    m->mqtt_map_interval_s = 3600;
+    m->mqtt_map_precision = 14;
+    m->audio_ptt = -1;
+    m->i2s_ws = m->i2s_sd = m->i2s_din = m->i2s_sck = -1;
+}
+
+/* GPIOs the Heltec V3 uses itself: button, battery ADC, LoRa SPI, OLED, USB, flash, LED, Vext, console UART. */
+bool edge_pin_protected(int g)
+{
+    static const uint8_t P[] = {0, 1, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 26, 27, 28, 29, 30, 31, 32, 35, 36, 37, 43, 44};
+    if (g < 0 || g > 48) return true;
+    for (size_t i = 0; i < sizeof(P); i++) {
+        if (P[i] == g) return true;
+    }
+    return false;
+}
+
+static void mod_clamp(edge_mesh_mod_t *m)
+{
+    m->version = EDGE_MOD_VERSION;
+    if (m->admin_mode > EDGE_ADMIN_KEYS) m->admin_mode = EDGE_ADMIN_OPEN;
+    if (m->n_admin_keys > EDGE_ADMIN_KEYS_MAX) m->n_admin_keys = EDGE_ADMIN_KEYS_MAX;
+    if (m->n_pins > EDGE_RHW_PINS_MAX) m->n_pins = EDGE_RHW_PINS_MAX;
+    int k = 0;
+    for (int i = 0; i < m->n_pins; i++) {
+        if (edge_pin_protected(m->pins[i].gpio)) continue;
+        if (m->pins[i].type != EDGE_RHW_READ && m->pins[i].type != EDGE_RHW_WRITE) m->pins[i].type = EDGE_RHW_READ;
+        m->pins[i].name[sizeof(m->pins[i].name) - 1] = 0;
+        m->pins[k++] = m->pins[i];
+    }
+    m->n_pins = (uint8_t)k;
+    if (m->sf_return_max == 0 || m->sf_return_max > 100) m->sf_return_max = 25;
+    if (m->sf_return_window_min == 0 || m->sf_return_window_min > 7 * 24 * 60) m->sf_return_window_min = 240;
+    m->mqtt_address[sizeof(m->mqtt_address) - 1] = 0;
+    m->mqtt_username[sizeof(m->mqtt_username) - 1] = 0;
+    m->mqtt_password[sizeof(m->mqtt_password) - 1] = 0;
+    m->mqtt_root[sizeof(m->mqtt_root) - 1] = 0;
+    if (!m->mqtt_address[0]) edge_strlcpy(m->mqtt_address, "mqtt.meshtastic.org", sizeof(m->mqtt_address));
+    if (m->mqtt_map_interval_s < 900) m->mqtt_map_interval_s = 900;
+    if (m->mqtt_map_precision > 32) m->mqtt_map_precision = 14;
+    if (m->audio_bitrate > 10) m->audio_bitrate = 0;
+    if (m->tak_team > 14) m->tak_team = 0;
+    if (m->tak_role > 8) m->tak_role = 0;
+}
+
+void edge_mod_get(edge_mesh_mod_t *out)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    *out = s_mod;
+    xSemaphoreGive(s_lock);
+}
+
+esp_err_t edge_mod_set(const edge_mesh_mod_t *in)
+{
+    edge_mesh_mod_t m = *in;
+    mod_clamp(&m);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_mod = m;
+    esp_err_t err = save_blob("meshmod", &s_mod, sizeof(s_mod));
     xSemaphoreGive(s_lock);
     return err;
 }

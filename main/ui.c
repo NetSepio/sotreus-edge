@@ -35,6 +35,8 @@ static const char *TAG = "ui";
 enum { SCREEN_STATUS = 0, SCREEN_LINK, SCREEN_ACCESS, SCREEN_MESH, SCREEN_COUNT };
 
 static int s_screen;
+static volatile bool s_restarting, s_restart_wake;
+static const char *volatile s_restart_to;   /* "MESH" / "AWARE", or NULL for a plain restart */
 static int s_canned;            /* selected canned message on the LORA screen */
 static int64_t s_tap_at;        /* pending single tap on the LORA screen (double tap = next message) */
 static bool s_display_on = true;
@@ -78,7 +80,7 @@ static void draw_status(const edge_config_t *cfg)
             line(3, "%.3f MHz", m.freq_mhz);
             line(4, "Nodes %d rx %lu tx %lu", m.nodes, (unsigned long)m.rx_packets, (unsigned long)m.tx_packets);
         }
-        line(5, "Awareness paused");
+        line(5, "Awareness off");
     } else {
         sense_stats_t s;
         sense_get_stats(&s);
@@ -199,6 +201,43 @@ static void draw_mesh(void)
     }
 }
 
+static void draw_restart(void)
+{
+    header("RESTART");
+    const char *to = s_restart_to;
+    if (to) {
+        line(2, "Switching to");
+        int w = (int)strlen(to) * 12;
+        ssd1306_text((OLED_W - w) / 2, 3, to, 2);
+    } else {
+        line(3, "Restarting");
+    }
+    line(6, "Back in about 15 s");
+}
+
+/* Screen order follows the mode this boot runs: Mesh adds the LORA screen right
+ * after STATUS; Awareness has no LORA screen at all. */
+static int next_screen(int cur)
+{
+    static const int AWARE[] = {SCREEN_STATUS, SCREEN_LINK, SCREEN_ACCESS};
+    static const int MESH[] = {SCREEN_STATUS, SCREEN_MESH, SCREEN_LINK, SCREEN_ACCESS};
+    bool mesh = edge_app_mode() == EDGE_MODE_MESH;
+    const int *o = mesh ? MESH : AWARE;
+    int n = mesh ? 4 : 3;
+    for (int i = 0; i < n; i++) {
+        if (o[i] == cur) return o[(i + 1) % n];
+    }
+    return SCREEN_STATUS;
+}
+
+void ui_show_restart(const char *to_mode)
+{
+    if (s_restarting && !to_mode) return; /* keep the more specific message */
+    s_restart_to = to_mode;
+    s_restarting = true;
+    s_restart_wake = true;
+}
+
 static void draw_passkey(uint32_t passkey)
 {
     header("PAIR");
@@ -278,7 +317,7 @@ static void ui_task(void *arg)
                 } else if (canned) {
                     s_tap_at = t; /* wait to see whether a second tap follows */
                 } else if (s_display_on) {
-                    s_screen = (s_screen + 1) % SCREEN_COUNT;
+                    s_screen = next_screen(s_screen);
                 }
                 wake();
             } else if (held < 2500 && s_display_on && s_screen == SCREEN_MESH && mesh_running()) {
@@ -292,7 +331,7 @@ static void ui_task(void *arg)
         }
         if (s_tap_at && t - s_tap_at >= 400) { /* single tap on the LORA screen: next screen */
             s_tap_at = 0;
-            s_screen = (s_screen + 1) % SCREEN_COUNT;
+            s_screen = next_screen(s_screen);
             last_redraw = 0;
         }
         int64_t held = pressed ? t - pressed_at : 0;
@@ -330,6 +369,11 @@ static void ui_task(void *arg)
 
         if (!have_display) continue;
         if (b.passkey_active || (pressed && held >= RESET_WARN_MS)) wake();
+        if (s_restart_wake) {
+            s_restart_wake = false;
+            wake();
+            last_redraw = 0;
+        }
         if (s_display_on && cfg.display_timeout_s && !b.passkey_active &&
             t - s_last_activity > (int64_t)cfg.display_timeout_s * 1000) {
             ssd1306_power(false);
@@ -341,6 +385,8 @@ static void ui_task(void *arg)
         ssd1306_clear();
         if (pressed && held >= RESET_WARN_MS && !reset_fired) {
             draw_reset(held);
+        } else if (s_restarting) {
+            draw_restart();
         } else if (b.passkey_active) {
             draw_passkey(b.passkey);
         } else {

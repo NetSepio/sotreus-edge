@@ -18,6 +18,7 @@
 #include "edge_ble.h"
 #include "edge_battery.h"
 #include "edge_config.h"
+#include "edge_meshmod.h"
 #include "edge_log.h"
 #include "edge_records.h"
 #include "edge_time.h"
@@ -306,6 +307,212 @@ cJSON *edge_api_status_json(void)
     return o;
 }
 
+static const char *const TAK_TEAMS[] = {"default", "White", "Yellow", "Orange", "Magenta", "Red", "Maroon", "Purple",
+                                        "Dark Blue", "Blue", "Cyan", "Teal", "Green", "Dark Green", "Brown"};
+static const char *const TAK_ROLES[] = {"default", "Team Member", "Team Lead", "HQ", "Sniper", "Medic", "Forward Observer",
+                                        "RTO", "K9"};
+static const char *const AUDIO_RATES[] = {"default", "3200", "2400", "1600", "1400", "1300", "1200", "700", "700B", "700C", "450"};
+
+static void mod_json(cJSON *m, const edge_mesh_mod_t *d, int n_channels)
+{
+    cJSON *chs = cJSON_GetObjectItemCaseSensitive(m, "channels");
+    for (int i = 0; chs && i < n_channels; i++) {
+        cJSON *ch = cJSON_GetArrayItem(chs, i);
+        if (!ch) break;
+        cJSON_AddBoolToObject(ch, "uplink", (d->ch_uplink >> i) & 1);
+        cJSON_AddBoolToObject(ch, "downlink", (d->ch_downlink >> i) & 1);
+    }
+    cJSON *a = cJSON_AddObjectToObject(m, "admin");
+    cJSON_AddBoolToObject(a, "enabled", d->admin_enabled);
+    cJSON_AddStringToObject(a, "mode", d->admin_mode == EDGE_ADMIN_KEYS ? "keys" : "open");
+    cJSON_AddBoolToObject(a, "admin_channel", d->admin_channel);
+    cJSON *keys = cJSON_AddArrayToObject(a, "keys");
+    for (int i = 0; i < d->n_admin_keys; i++) {
+        char b64[48];
+        edge_b64_encode(d->admin_keys[i], 32, b64, sizeof(b64));
+        cJSON_AddItemToArray(keys, cJSON_CreateString(b64));
+    }
+    cJSON *rh = cJSON_AddObjectToObject(m, "remote_hardware");
+    cJSON_AddBoolToObject(rh, "enabled", d->rhw_enabled);
+    cJSON_AddBoolToObject(rh, "allow_undefined_pins", d->rhw_undefined_ok);
+    cJSON *pins = cJSON_AddArrayToObject(rh, "pins");
+    for (int i = 0; i < d->n_pins; i++) {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddNumberToObject(p, "gpio", d->pins[i].gpio);
+        cJSON_AddStringToObject(p, "name", d->pins[i].name);
+        cJSON_AddStringToObject(p, "type", d->pins[i].type == EDGE_RHW_WRITE ? "write" : "read");
+        cJSON_AddItemToArray(pins, p);
+    }
+    cJSON *sf = cJSON_AddObjectToObject(m, "store_forward");
+    cJSON_AddBoolToObject(sf, "server", d->sf_enabled);
+    cJSON_AddBoolToObject(sf, "heartbeat", d->sf_heartbeat);
+    cJSON_AddNumberToObject(sf, "return_max", d->sf_return_max);
+    cJSON_AddNumberToObject(sf, "return_window_min", d->sf_return_window_min);
+    cJSON *q = cJSON_AddObjectToObject(m, "mqtt");
+    cJSON_AddBoolToObject(q, "enabled", d->mqtt_enabled);
+    cJSON_AddStringToObject(q, "address", d->mqtt_address);
+    cJSON_AddStringToObject(q, "username", d->mqtt_username);
+    cJSON_AddBoolToObject(q, "password_set", d->mqtt_password[0] != 0);
+    cJSON_AddBoolToObject(q, "encryption", d->mqtt_encryption);
+    cJSON_AddBoolToObject(q, "json", d->mqtt_json);
+    cJSON_AddBoolToObject(q, "tls", d->mqtt_tls);
+    cJSON_AddStringToObject(q, "root", d->mqtt_root);
+    cJSON_AddBoolToObject(q, "proxy_to_client", d->mqtt_proxy_to_client);
+    cJSON *mp = cJSON_AddObjectToObject(q, "map");
+    cJSON_AddBoolToObject(mp, "enabled", d->mqtt_map);
+    cJSON_AddNumberToObject(mp, "interval_s", d->mqtt_map_interval_s);
+    cJSON_AddNumberToObject(mp, "precision", d->mqtt_map_precision);
+    cJSON_AddBoolToObject(mp, "location", d->mqtt_map_location);
+    cJSON *tk = cJSON_AddObjectToObject(m, "tak");
+    cJSON_AddStringToObject(tk, "team", TAK_TEAMS[d->tak_team < 15 ? d->tak_team : 0]);
+    cJSON_AddStringToObject(tk, "role", TAK_ROLES[d->tak_role < 9 ? d->tak_role : 0]);
+    cJSON *au = cJSON_AddObjectToObject(m, "audio");
+    cJSON_AddBoolToObject(au, "enabled", d->audio_enabled);
+    cJSON_AddNumberToObject(au, "ptt_gpio", d->audio_ptt);
+    cJSON_AddStringToObject(au, "bitrate", AUDIO_RATES[d->audio_bitrate < 11 ? d->audio_bitrate : 0]);
+    cJSON_AddNumberToObject(au, "i2s_ws", d->i2s_ws);
+    cJSON_AddNumberToObject(au, "i2s_sd", d->i2s_sd);
+    cJSON_AddNumberToObject(au, "i2s_din", d->i2s_din);
+    cJSON_AddNumberToObject(au, "i2s_sck", d->i2s_sck);
+}
+
+static int8_t gpio_arg(double n)
+{
+    return (int8_t)(n < 0 || n > 48 ? -1 : n);
+}
+
+static const char *apply_mod_json(const cJSON *m, edge_mesh_mod_t *d)
+{
+    const char *s;
+    double n;
+    bool b;
+    const cJSON *chs = cJSON_GetObjectItemCaseSensitive(m, "channels");
+    if (cJSON_IsArray(chs)) {
+        uint8_t up = 0, down = 0;
+        int cnt = cJSON_GetArraySize(chs);
+        for (int i = 0; i < cnt && i < EDGE_MESH_MAX_CHANNELS; i++) {
+            const cJSON *ch = cJSON_GetArrayItem(chs, i);
+            if (jbool(ch, "uplink", &b) && b) up |= (uint8_t)(1u << i);
+            if (jbool(ch, "downlink", &b) && b) down |= (uint8_t)(1u << i);
+        }
+        d->ch_uplink = up;
+        d->ch_downlink = down;
+    }
+    const cJSON *a = cJSON_GetObjectItemCaseSensitive(m, "admin");
+    if (cJSON_IsObject(a)) {
+        if (jbool(a, "enabled", &b)) d->admin_enabled = b;
+        if ((s = jstr(a, "mode"))) {
+            if (strcmp(s, "open") == 0) d->admin_mode = EDGE_ADMIN_OPEN;
+            else if (strcmp(s, "keys") == 0) d->admin_mode = EDGE_ADMIN_KEYS;
+            else return "admin mode must be open or keys";
+        }
+        if (jbool(a, "admin_channel", &b)) d->admin_channel = b;
+        const cJSON *keys = cJSON_GetObjectItemCaseSensitive(a, "keys");
+        if (cJSON_IsArray(keys)) {
+            int cnt = cJSON_GetArraySize(keys);
+            if (cnt > EDGE_ADMIN_KEYS_MAX) return "at most 3 admin keys";
+            uint8_t nk = 0;
+            for (int i = 0; i < cnt; i++) {
+                const cJSON *k = cJSON_GetArrayItem(keys, i);
+                if (!cJSON_IsString(k) || !k->valuestring[0]) continue;
+                uint8_t raw[40];
+                const char *v = k->valuestring;
+                if (strncmp(v, "base64:", 7) == 0) v += 7;
+                if (edge_b64_decode(v, raw, sizeof(raw)) != 32) return "an admin key is a node's 32-byte public key in base64";
+                memcpy(d->admin_keys[nk++], raw, 32);
+            }
+            d->n_admin_keys = nk;
+        }
+        if (d->admin_mode == EDGE_ADMIN_KEYS && !d->n_admin_keys && !d->admin_channel)
+            return "add an admin key (or allow the admin channel) before limiting remote admin to keys";
+    }
+    const cJSON *rh = cJSON_GetObjectItemCaseSensitive(m, "remote_hardware");
+    if (cJSON_IsObject(rh)) {
+        if (jbool(rh, "enabled", &b)) d->rhw_enabled = b;
+        if (jbool(rh, "allow_undefined_pins", &b)) d->rhw_undefined_ok = b;
+        const cJSON *pins = cJSON_GetObjectItemCaseSensitive(rh, "pins");
+        if (cJSON_IsArray(pins)) {
+            int cnt = cJSON_GetArraySize(pins);
+            if (cnt > EDGE_RHW_PINS_MAX) return "at most 8 remote hardware pins";
+            d->n_pins = 0;
+            for (int i = 0; i < cnt; i++) {
+                const cJSON *p = cJSON_GetArrayItem(pins, i);
+                if (!jnum(p, "gpio", &n)) continue;
+                if (edge_pin_protected((int)n)) return "that GPIO is used by the board itself";
+                edge_rhw_pin_t *pin = &d->pins[d->n_pins++];
+                memset(pin, 0, sizeof(*pin));
+                pin->gpio = (uint8_t)n;
+                pin->type = (s = jstr(p, "type")) && strcmp(s, "write") == 0 ? EDGE_RHW_WRITE : EDGE_RHW_READ;
+                if ((s = jstr(p, "name"))) edge_strlcpy(pin->name, s, sizeof(pin->name));
+            }
+        }
+    }
+    const cJSON *sf = cJSON_GetObjectItemCaseSensitive(m, "store_forward");
+    if (cJSON_IsObject(sf)) {
+        if (jbool(sf, "server", &b)) d->sf_enabled = b;
+        if (jbool(sf, "heartbeat", &b)) d->sf_heartbeat = b;
+        if (jnum(sf, "return_max", &n)) d->sf_return_max = (uint16_t)(n < 1 ? 1 : n > 100 ? 100 : n);
+        if (jnum(sf, "return_window_min", &n)) d->sf_return_window_min = (uint16_t)(n < 1 ? 1 : n > 10080 ? 10080 : n);
+    }
+    const cJSON *q = cJSON_GetObjectItemCaseSensitive(m, "mqtt");
+    if (cJSON_IsObject(q)) {
+        if (jbool(q, "enabled", &b)) d->mqtt_enabled = b;
+        if ((s = jstr(q, "address"))) {
+            if (strlen(s) >= sizeof(d->mqtt_address) || strpbrk(s, " /")) return "MQTT server: host or host:port, up to 63 characters";
+            edge_strlcpy(d->mqtt_address, s, sizeof(d->mqtt_address));
+        }
+        if ((s = jstr(q, "username"))) edge_strlcpy(d->mqtt_username, s, sizeof(d->mqtt_username));
+        if ((s = jstr(q, "password"))) edge_strlcpy(d->mqtt_password, s, sizeof(d->mqtt_password));
+        if (jbool(q, "encryption", &b)) d->mqtt_encryption = b;
+        if (jbool(q, "json", &b)) d->mqtt_json = b;
+        if (jbool(q, "tls", &b)) d->mqtt_tls = b;
+        if ((s = jstr(q, "root"))) {
+            if (strlen(s) >= sizeof(d->mqtt_root) || strpbrk(s, "+#")) return "MQTT root topic: up to 31 characters, no + or #";
+            edge_strlcpy(d->mqtt_root, s, sizeof(d->mqtt_root));
+        }
+        if (jbool(q, "proxy_to_client", &b)) d->mqtt_proxy_to_client = b;
+        const cJSON *mp = cJSON_GetObjectItemCaseSensitive(q, "map");
+        if (cJSON_IsObject(mp)) {
+            if (jbool(mp, "enabled", &b)) d->mqtt_map = b;
+            if (jnum(mp, "interval_s", &n)) d->mqtt_map_interval_s = (uint32_t)(n < 900 ? 900 : n);
+            if (jnum(mp, "precision", &n)) d->mqtt_map_precision = (uint8_t)(n < 10 ? 10 : n > 16 ? 16 : n);
+            if (jbool(mp, "location", &b)) d->mqtt_map_location = b;
+        }
+    }
+    const cJSON *tk = cJSON_GetObjectItemCaseSensitive(m, "tak");
+    if (cJSON_IsObject(tk)) {
+        if ((s = jstr(tk, "team"))) {
+            int i = name_index(s, TAK_TEAMS, 15);
+            if (i < 0) return "unknown TAK team";
+            d->tak_team = (uint8_t)i;
+        }
+        if ((s = jstr(tk, "role"))) {
+            int i = name_index(s, TAK_ROLES, 9);
+            if (i < 0) return "unknown TAK role";
+            d->tak_role = (uint8_t)i;
+        }
+    }
+    const cJSON *au = cJSON_GetObjectItemCaseSensitive(m, "audio");
+    if (cJSON_IsObject(au)) {
+        if (jbool(au, "enabled", &b)) d->audio_enabled = b;
+        if (jnum(au, "ptt_gpio", &n)) d->audio_ptt = gpio_arg(n);
+        if ((s = jstr(au, "bitrate"))) {
+            int i = name_index(s, AUDIO_RATES, 11);
+            if (i < 0) return "unknown audio bitrate";
+            d->audio_bitrate = (uint8_t)i;
+        }
+        if (jnum(au, "i2s_ws", &n)) d->i2s_ws = gpio_arg(n);
+        if (jnum(au, "i2s_sd", &n)) d->i2s_sd = gpio_arg(n);
+        if (jnum(au, "i2s_din", &n)) d->i2s_din = gpio_arg(n);
+        if (jnum(au, "i2s_sck", &n)) d->i2s_sck = gpio_arg(n);
+        int8_t g[] = {d->audio_ptt, d->i2s_ws, d->i2s_sd, d->i2s_din, d->i2s_sck};
+        for (int i = 0; i < 5; i++) {
+            if (g[i] >= 0 && edge_pin_protected(g[i])) return "an audio GPIO is used by the board itself";
+        }
+    }
+    return NULL;
+}
+
 static cJSON *config_json(const edge_config_t *c)
 {
     cJSON *o = cJSON_CreateObject();
@@ -395,6 +602,12 @@ static cJSON *config_json(const edge_config_t *c)
         char nid[12];
         snprintf(nid, sizeof(nid), "!%08lx", (unsigned long)x->ignore[i]);
         cJSON_AddItemToArray(ig, cJSON_CreateString(nid));
+    }
+    edge_mesh_mod_t *md = malloc(sizeof(*md));
+    if (md) {
+        edge_mod_get(md);
+        mod_json(m, md, c->n_channels);
+        free(md);
     }
     return o;
 }
@@ -584,6 +797,16 @@ static const char *apply_config_json(const cJSON *j, edge_config_t *c)
 
 static void channel_url(const edge_config_t *c, char *out, size_t cap)
 {
+    uint8_t up = 0, down = 0;
+    {
+        edge_mesh_mod_t *md = malloc(sizeof(*md));
+        if (md) {
+            edge_mod_get(md);
+            up = md->ch_uplink;
+            down = md->ch_downlink;
+            free(md);
+        }
+    }
     mt_channelset_t cs = {0};
     cs.n = c->n_channels;
     for (int i = 0; i < c->n_channels; i++) {
@@ -591,6 +814,8 @@ static void channel_url(const edge_config_t *c, char *out, size_t cap)
         memcpy(cs.ch[i].psk, c->channels[i].psk, c->channels[i].psk_len);
         cs.ch[i].psk_len = c->channels[i].psk_len;
         cs.ch[i].position_precision = c->channels[i].position_precision;
+        cs.ch[i].uplink = (up >> i) & 1;
+        cs.ch[i].downlink = (down >> i) & 1;
     }
     cs.has_lora = true;
     cs.use_preset = true;
@@ -636,6 +861,18 @@ static const char *apply_channel_url(const char *url, bool replace, edge_config_
         ch->psk_len = len;
         bool pub = len == 1 && cs.ch[i].psk[0] == 1;
         ch->position_precision = (uint8_t)(cs.ch[i].position_precision ? cs.ch[i].position_precision : (pub ? 13 : 32));
+    }
+    edge_mesh_mod_t *md = malloc(sizeof(*md));
+    if (md) {
+        edge_mod_get(md);
+        if (replace) md->ch_uplink = md->ch_downlink = 0;
+        for (int i = 0; i < cs.n; i++) {
+            uint8_t bit = (uint8_t)(1u << (base + i));
+            md->ch_uplink = (uint8_t)(cs.ch[i].uplink ? md->ch_uplink | bit : md->ch_uplink & ~bit);
+            md->ch_downlink = (uint8_t)(cs.ch[i].downlink ? md->ch_downlink | bit : md->ch_downlink & ~bit);
+        }
+        edge_mod_set(md);
+        free(md);
     }
     c->n_channels = (uint8_t)(base + cs.n);
     if (replace && cs.has_lora) {
@@ -692,6 +929,26 @@ static __attribute__((noinline)) cJSON *cmd_set_config(const cJSON *cfgj)
         free(old);
         return err_resp(e);
     }
+    bool mod_changed = false;
+    const cJSON *meshj = cJSON_GetObjectItemCaseSensitive(cfgj, "mesh");
+    if (cJSON_IsObject(meshj)) {
+        edge_mesh_mod_t *md = malloc(2 * sizeof(*md));
+        if (!md) {
+            free(old);
+            return err_resp("out of memory");
+        }
+        edge_mod_get(md);
+        md[1] = md[0];
+        e = apply_mod_json(meshj, &md[1]);
+        if (e) {
+            free(md);
+            free(old);
+            return err_resp(e);
+        }
+        mod_changed = memcmp(&md[0], &md[1], sizeof(md[0])) != 0;
+        if (mod_changed) edge_mod_set(&md[1]);
+        free(md);
+    }
     if (edge_config_set(c) != ESP_OK) {
         free(old);
         return err_resp("could not save settings");
@@ -702,7 +959,8 @@ static __attribute__((noinline)) cJSON *cmd_set_config(const cJSON *cfgj)
                         old->n_channels != c->n_channels || old->rebroadcast != c->rebroadcast ||
                         memcmp(old->channels, c->channels, sizeof(c->channels)) != 0 ||
                         memcmp(&old->mx, &c->mx, sizeof(c->mx)) != 0 || old->nodeinfo_interval_s != c->nodeinfo_interval_s ||
-                        strcmp(old->long_name, c->long_name) != 0 || strcmp(old->short_name, c->short_name) != 0;
+                        strcmp(old->long_name, c->long_name) != 0 || strcmp(old->short_name, c->short_name) != 0 ||
+                        mod_changed;
     bool sense_changed = old->ble_scan != c->ble_scan || old->ble_active != c->ble_active ||
                          old->wifi_scan != c->wifi_scan || old->wifi_probes != c->wifi_probes ||
                          old->rssi_floor != c->rssi_floor || old->close_after_s != c->close_after_s ||
@@ -991,6 +1249,19 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         cJSON_AddStringToObject(r, "url", out);
         free(c);
         free(out);
+    } else if (strcmp(cmd, "mesh_tak") == 0) {
+        r = ok_resp();
+        cJSON_AddItemToObject(r, "tak", mesh_tak_json());
+    } else if (strcmp(cmd, "mesh_tak_chat") == 0) {
+        esp_err_t e = mesh_tak_send_chat(jstr(req, "text"), jnum(req, "channel", &n) ? (uint8_t)n : 0);
+        if (e == ESP_ERR_INVALID_ARG) return err_resp("text: 1 to 200 bytes");
+        if (e != ESP_OK) return err_resp("mesh is not running");
+        r = ok_resp();
+    } else if (strcmp(cmd, "mesh_tak_position") == 0) {
+        esp_err_t e = mesh_tak_send_position(jnum(req, "channel", &n) ? (uint8_t)n : 0);
+        if (e == ESP_ERR_NOT_FOUND) return err_resp("no position to send: set a fixed position, or have the app share one, and allow position on that channel");
+        if (e != ESP_OK) return err_resp("mesh is not running");
+        r = ok_resp();
     } else if (strcmp(cmd, "mesh_nodes") == 0) {
         r = ok_resp();
         cJSON_AddItemToObject(r, "nodes", mesh_nodes_json());

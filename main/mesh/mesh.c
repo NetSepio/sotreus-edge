@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "aes/esp_aes.h"
 #include "driver/gpio.h"
@@ -18,6 +19,8 @@
 #include "sdkconfig.h"
 
 #include "board.h"
+#include "edge_app.h"
+#include "edge_meshmod.h"
 #include "edge_battery.h"
 #include "edge_ble.h"
 #include "edge_config.h"
@@ -27,8 +30,12 @@
 #include "edge_time.h"
 #include "edge_util.h"
 #include "edge_wifi.h"
+#include "mesh_admin.h"
 #include "mesh_crypto.h"
+#include "mesh_mqtt.h"
+#include "mesh_pb_ext.h"
 #include "mesh_radio.h"
+#include "mesh_sfdb.h"
 #include "sx1262.h"
 
 static const char *TAG = "mesh";
@@ -162,6 +169,7 @@ static bool s_radio_ok;
 static volatile bool s_running;
 
 static edge_config_t s_cfg;
+static edge_mesh_mod_t s_mod;
 static const mesh_region_t *s_region;
 static const mesh_preset_t *s_preset;
 static float s_freq;
@@ -365,6 +373,11 @@ static cJSON *node_json(const node_t *n)
         cJSON_AddStringToObject(o, "role", role_name(n->role));
     }
     cJSON_AddBoolToObject(o, "has_public_key", (n->flags & NF_PKC) != 0);
+    if (n->flags & NF_PKC) {
+        char b64[48];
+        edge_b64_encode(n->pubkey, 32, b64, sizeof(b64));
+        cJSON_AddStringToObject(o, "public_key", b64);
+    }
     cJSON_AddBoolToObject(o, "favorite", (n->flags & NF_FAV) != 0);
     cJSON_AddBoolToObject(o, "ignored", (n->flags & NF_IGNORE) != 0);
     if (n->last_heard_up > 0) cJSON_AddNumberToObject(o, "last_heard_ago_s", (double)((now_ms() - n->last_heard_up) / 1000));
@@ -614,6 +627,9 @@ static uint32_t new_packet_id(void)
     return id;
 }
 
+static void mqtt_uplink(const uint8_t *frame, size_t len, int ch, bool pki, const mt_data_t *d, bool from_us, int16_t rssi,
+                        float snr);
+
 /* Encrypts and queues a packet originated here. Caller holds s_lock. */
 static esp_err_t send_data(uint32_t to, int ch_idx, const mt_data_t *d_in, bool want_ack, bool track, uint8_t hop_limit,
                            uint32_t *out_id, bool *used_pki)
@@ -668,6 +684,32 @@ static esp_err_t send_data(uint32_t to, int ch_idx, const mt_data_t *d_in, bool 
     seen_add(s_me, id, to);
     if (out_id) *out_id = id;
     if (used_pki) *used_pki = pki;
+    mqtt_uplink(t->buf, t->len, pki ? -1 : ch_idx, pki, &d, true, 0, 0);
+    if (s_task) xTaskNotifyGive(s_task);
+    return ESP_OK;
+}
+
+/* Re-sends a stored packet under its original sender and id (store & forward replay). */
+static esp_err_t send_data_as(uint32_t from, uint32_t id, uint32_t to, int ch_idx, const mt_data_t *d)
+{
+    if (!s_running || !s_region || !s_txq || !s_cfg.mx.tx_enabled) return ESP_ERR_INVALID_STATE;
+    if (ch_idx < 0 || ch_idx >= s_nch) return ESP_ERR_INVALID_ARG;
+    uint8_t plain[MESH_MAX_PAYLOAD];
+    size_t n = mt_data_encode(d, plain, sizeof(plain));
+    if (n == 0) return ESP_ERR_INVALID_SIZE;
+    tx_item_t *t = txq_alloc();
+    if (!t) return ESP_ERR_NO_MEM;
+    node_t *peer = node_get(to, false);
+    mt_header_t h = {.to = to, .from = from, .id = id, .flags = mt_make_flags(s_cfg.hop_limit, s_cfg.hop_limit, false),
+                     .channel = s_ch[ch_idx].hash, .next_hop = peer ? peer->next_hop : 0, .relay_node = (uint8_t)(s_me & 0xff)};
+    mt_header_write(&h, t->buf);
+    memcpy(t->buf + MESH_HEADER_LEN, plain, n);
+    channel_crypt(&s_ch[ch_idx], from, id, t->buf + MESH_HEADER_LEN, n);
+    t->len = (uint8_t)(MESH_HEADER_LEN + n);
+    t->from = from;
+    t->id = id;
+    t->to = to;
+    t->not_before = now_ms() + rnd(8) * mesh_slot_ms(s_preset);
     if (s_task) xTaskNotifyGive(s_task);
     return ESP_OK;
 }
@@ -774,6 +816,849 @@ static void send_neighbor_info(void)
     if (l) send_port(MT_BROADCAST, 0, MT_PORT_NEIGHBORINFO, buf, l, false, 0, 0); /* zero hop, like Meshtastic */
 }
 
+
+/* ==== Mesh modules: MQTT, store & forward server, remote admin, remote hardware ========== */
+
+#define FW_COMPAT "2.5.0.5e0e" /* Meshtastic feature level reported to other nodes' apps */
+
+static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr);
+static void store_text(const mt_header_t *h, int ch, bool pki, const mt_data_t *d, const uint8_t *text, size_t len,
+                       int16_t rssi, float snr, const char *prefix);
+
+static bool s_rx_from_mqtt;
+static bool s_mqtt_restart;
+static bool s_mqtt_public;
+static char s_mqtt_root[48];
+static int64_t s_mqtt_check, s_map_next;
+static uint8_t s_dl_buf[MQTT_RX_MAX];
+
+static int64_t s_reload_at, s_reboot_at, s_nodeinfo_at;
+static bool s_wifi_reconf;
+static uint8_t s_passkey[8];
+static int64_t s_passkey_at = -1;
+static uint32_t s_admin_seen, s_admin_refused;
+
+static uint64_t s_rhw_out, s_rhw_watch, s_rhw_last;
+static uint32_t s_rhw_watcher;
+static int s_rhw_ch;
+static int64_t s_rhw_sent;
+
+static bool s_sfs_on;
+static struct {
+    uint32_t num;
+    int ch;
+    uint32_t seqs[100];
+    int n, idx;
+    int64_t next_at;
+} s_sfs;
+static struct {
+    uint32_t num, last_s;
+} s_sfs_last[8];
+static uint32_t s_sfs_requests, s_sfs_hist_requests;
+static int64_t s_sfs_hb_next;
+static uint32_t s_audio_frames;
+
+static bool wifi_up(edge_wifi_info_t *wi)
+{
+    edge_wifi_get_info(wi);
+    return wi->state == EDGE_WIFI_STA_CONNECTED && wi->ip[0];
+}
+
+static void gateway_id(char out[16])
+{
+    snprintf(out, 16, "!%08lx", (unsigned long)s_me);
+}
+
+/* ---- MQTT ---------------------------------------------------------------------------- */
+
+static void mqtt_json_uplink(const mt_header_t *h, int ch, const mt_data_t *d, int16_t rssi, float snr)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON *pl = NULL;
+    const char *type = NULL;
+    switch (d->portnum) {
+    case MT_PORT_TEXT: {
+        char t[MAX_TEXT + 34];
+        edge_sanitize_text(t, sizeof(t), d->payload, d->payload_len);
+        pl = cJSON_CreateObject();
+        cJSON_AddStringToObject(pl, "text", t);
+        type = "text";
+        break;
+    }
+    case MT_PORT_POSITION: {
+        mt_position_t p;
+        if (!mt_position_decode(d->payload, d->payload_len, &p)) break;
+        pl = cJSON_CreateObject();
+        if (p.has_lat) cJSON_AddNumberToObject(pl, "latitude_i", p.lat_i);
+        if (p.has_lon) cJSON_AddNumberToObject(pl, "longitude_i", p.lon_i);
+        if (p.has_alt) cJSON_AddNumberToObject(pl, "altitude", p.alt);
+        if (p.precision_bits) cJSON_AddNumberToObject(pl, "precision_bits", p.precision_bits);
+        if (p.time) cJSON_AddNumberToObject(pl, "time", p.time);
+        type = "position";
+        break;
+    }
+    case MT_PORT_NODEINFO: {
+        mt_user_t u;
+        if (!mt_user_decode(d->payload, d->payload_len, &u)) break;
+        pl = cJSON_CreateObject();
+        cJSON_AddStringToObject(pl, "id", u.id);
+        cJSON_AddStringToObject(pl, "longname", u.long_name);
+        cJSON_AddStringToObject(pl, "shortname", u.short_name);
+        cJSON_AddNumberToObject(pl, "hardware", u.hw_model);
+        cJSON_AddNumberToObject(pl, "role", u.role);
+        type = "nodeinfo";
+        break;
+    }
+    case MT_PORT_TELEMETRY: {
+        mt_telemetry_t t;
+        if (!mt_telemetry_decode(d->payload, d->payload_len, &t)) break;
+        pl = cJSON_CreateObject();
+        if (t.has_battery) cJSON_AddNumberToObject(pl, "battery_level", t.battery_level);
+        if (t.has_voltage) cJSON_AddNumberToObject(pl, "voltage", t.voltage);
+        if (t.has_ch_util) cJSON_AddNumberToObject(pl, "channel_utilization", t.channel_utilization);
+        if (t.has_air_util) cJSON_AddNumberToObject(pl, "air_util_tx", t.air_util_tx);
+        if (t.has_uptime) cJSON_AddNumberToObject(pl, "uptime_seconds", t.uptime_seconds);
+        if (t.has_temp) cJSON_AddNumberToObject(pl, "temperature", t.temperature);
+        if (t.has_hum) cJSON_AddNumberToObject(pl, "relative_humidity", t.relative_humidity);
+        if (t.has_press) cJSON_AddNumberToObject(pl, "barometric_pressure", t.barometric_pressure);
+        type = "telemetry";
+        break;
+    }
+    default:
+        break;
+    }
+    if (!pl) {
+        cJSON_Delete(o);
+        return;
+    }
+    char gw[16];
+    gateway_id(gw);
+    cJSON_AddNumberToObject(o, "channel", ch);
+    cJSON_AddNumberToObject(o, "from", h->from);
+    cJSON_AddNumberToObject(o, "hop_start", mt_hop_start(h));
+    cJSON_AddNumberToObject(o, "hops_away", mt_hop_start(h) >= mt_hop_limit(h) ? mt_hop_start(h) - mt_hop_limit(h) : 0);
+    cJSON_AddNumberToObject(o, "id", h->id);
+    cJSON_AddItemToObject(o, "payload", pl);
+    cJSON_AddNumberToObject(o, "rssi", rssi);
+    cJSON_AddStringToObject(o, "sender", gw);
+    cJSON_AddNumberToObject(o, "snr", snr);
+    cJSON_AddNumberToObject(o, "timestamp", now_unix_s());
+    cJSON_AddNumberToObject(o, "to", h->to);
+    cJSON_AddStringToObject(o, "type", type);
+    char *txt = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!txt) return;
+    char topic[MQTT_TOPIC_MAX];
+    snprintf(topic, sizeof(topic), "%s/2/json/%s/%s", s_mqtt_root, s_ch[ch].name, gw);
+    mesh_mqtt_publish(topic, txt, strlen(txt));
+    cJSON_free(txt);
+}
+
+/* Publishes a packet we sent or heard to the broker (Meshtastic MQTT uplink). Caller holds s_lock. */
+static void mqtt_uplink(const uint8_t *frame, size_t len, int ch, bool pki, const mt_data_t *d, bool from_us, int16_t rssi,
+                        float snr)
+{
+    if (!s_mod.mqtt_enabled || s_rx_from_mqtt || !mesh_mqtt_connected() || len <= MESH_HEADER_LEN) return;
+    mt_header_t h;
+    mt_header_read(frame, &h);
+    if (h.flags & MT_FLAG_VIA_MQTT) return;
+    bool up = pki ? s_mod.ch_uplink != 0 : (ch >= 0 && ch < s_nch && ((s_mod.ch_uplink >> ch) & 1));
+    if (!up) return;
+    /* Others' packets go up only when their sender allowed it (Data.bitfield OK_TO_MQTT). */
+    if (!from_us && (!d || !(d->has_bitfield && (d->bitfield & 1)))) return;
+    mt_envelope_t e = {.has_packet = true};
+    e.packet.from = h.from;
+    e.packet.to = h.to;
+    e.packet.id = h.id;
+    e.packet.hop_limit = mt_hop_limit(&h);
+    e.packet.hop_start = mt_hop_start(&h);
+    e.packet.want_ack = mt_want_ack(&h);
+    e.packet.next_hop = h.next_hop;
+    e.packet.relay_node = h.relay_node;
+    e.packet.rx_time = now_unix_s();
+    e.packet.rx_snr = snr;
+    e.packet.rx_rssi = rssi;
+    e.packet.pki_encrypted = pki;
+    uint8_t dbuf[MESH_MAX_PAYLOAD];
+    if (s_mod.mqtt_encryption || pki || !d) {
+        e.packet.channel = h.channel;
+        e.packet.payload = frame + MESH_HEADER_LEN;
+        e.packet.payload_len = len - MESH_HEADER_LEN;
+    } else {
+        size_t n = mt_data_encode(d, dbuf, sizeof(dbuf));
+        if (!n) return;
+        e.packet.decoded = true;
+        e.packet.payload = dbuf;
+        e.packet.payload_len = n;
+        e.packet.channel = (uint32_t)ch;
+    }
+    edge_strlcpy(e.channel_id, pki ? "PKI" : s_ch[ch].name, sizeof(e.channel_id));
+    gateway_id(e.gateway_id);
+    uint8_t out[MQTT_RX_MAX];
+    size_t n = mt_envelope_encode(&e, out, sizeof(out));
+    char topic[MQTT_TOPIC_MAX];
+    snprintf(topic, sizeof(topic), "%s/2/e/%s/%s", s_mqtt_root, e.channel_id, e.gateway_id);
+    if (n) mesh_mqtt_publish(topic, out, n);
+    if (s_mod.mqtt_json && d && !pki && !s_mqtt_public) mqtt_json_uplink(&h, ch, d, rssi, snr);
+}
+
+static void mqtt_json_downlink(const uint8_t *buf, size_t n)
+{
+    cJSON *j = cJSON_ParseWithLength((const char *)buf, n);
+    if (!j) return;
+    const cJSON *from = cJSON_GetObjectItemCaseSensitive(j, "from");
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(j, "type");
+    const cJSON *pl = cJSON_GetObjectItemCaseSensitive(j, "payload");
+    const cJSON *to = cJSON_GetObjectItemCaseSensitive(j, "to");
+    const cJSON *chn = cJSON_GetObjectItemCaseSensitive(j, "channel");
+    /* Meshtastic: a JSON downlink must name this node as "from" and is sent as if typed here. */
+    if (cJSON_IsNumber(from) && (uint32_t)from->valuedouble == s_me && cJSON_IsString(type) &&
+        strcmp(type->valuestring, "sendtext") == 0 && cJSON_IsString(pl) && pl->valuestring[0]) {
+        int ch = cJSON_IsNumber(chn) ? chn->valueint : 0;
+        uint32_t dest = cJSON_IsNumber(to) ? (uint32_t)to->valuedouble : MT_BROADCAST;
+        size_t len = strlen(pl->valuestring);
+        if (ch >= 0 && ch < s_nch && ((s_mod.ch_downlink >> ch) & 1) && len <= MAX_TEXT) {
+            mt_data_t d = {.portnum = MT_PORT_TEXT, .payload = (const uint8_t *)pl->valuestring, .payload_len = len};
+            send_data(dest, ch, &d, false, false, s_cfg.hop_limit, NULL, NULL);
+        }
+    }
+    cJSON_Delete(j);
+}
+
+/* Drains broker messages into the mesh as if heard on air (marked via MQTT). Caller holds s_lock. */
+static void mqtt_downlink(void)
+{
+    char topic[MQTT_TOPIC_MAX];
+    size_t n;
+    char me[16];
+    gateway_id(me);
+    for (int k = 0; k < 4 && mesh_mqtt_take(topic, sizeof(topic), s_dl_buf, sizeof(s_dl_buf), &n); k++) {
+        if (strstr(topic, "/2/json/")) {
+            if (s_mod.mqtt_json) mqtt_json_downlink(s_dl_buf, n);
+            continue;
+        }
+        mt_envelope_t e;
+        if (!mt_envelope_decode(s_dl_buf, n, &e)) continue;
+        if (strcmp(e.gateway_id, me) == 0 || e.packet.from == s_me || !e.packet.payload) continue;
+        bool pki_topic = strcmp(e.channel_id, "PKI") == 0;
+        int ch = -1;
+        if (pki_topic) {
+            if (e.packet.to != s_me) continue;
+        } else {
+            for (int i = 0; i < s_nch && ch < 0; i++) {
+                if (strcmp(s_ch[i].name, e.channel_id) == 0 && ((s_mod.ch_downlink >> i) & 1)) ch = i;
+            }
+            if (ch < 0) continue;
+        }
+        size_t plen = e.packet.payload_len;
+        if (!plen || plen + MESH_HEADER_LEN > MESH_MAX_PACKET) continue;
+        uint8_t hop = (uint8_t)(e.packet.hop_limit > 7 ? 7 : e.packet.hop_limit);
+        if (s_mqtt_public && hop > 1) hop = 1; /* public broker: hand it to direct neighbours only */
+        uint8_t hs = (uint8_t)(e.packet.hop_start > 7 ? 7 : e.packet.hop_start);
+        if (hs < hop) hs = hop;
+        mt_header_t h = {.to = e.packet.to, .from = e.packet.from, .id = e.packet.id,
+                         .flags = (uint8_t)(mt_make_flags(hop, hs, e.packet.want_ack) | MT_FLAG_VIA_MQTT),
+                         .channel = pki_topic ? 0 : s_ch[ch].hash};
+        uint8_t frame[MESH_MAX_PACKET];
+        mt_header_write(&h, frame);
+        memcpy(frame + MESH_HEADER_LEN, e.packet.payload, plen);
+        if (e.packet.decoded) {
+            if (pki_topic) continue;
+            channel_crypt(&s_ch[ch], h.from, h.id, frame + MESH_HEADER_LEN, plen);
+        } else if (!pki_topic && e.packet.channel != s_ch[ch].hash) {
+            continue;
+        }
+        s_rx_from_mqtt = true;
+        process_rx(frame, MESH_HEADER_LEN + plen, 0, 0);
+        s_rx_from_mqtt = false;
+    }
+}
+
+static void mqtt_map_report(void)
+{
+    mt_mapreport_t m = {.long_name = s_cfg.long_name, .short_name = s_cfg.short_name, .firmware_version = FW_COMPAT,
+                        .role = s_cfg.mx.role, .hw_model = MT_HW_HELTEC_V3, .region = s_cfg.region,
+                        .modem_preset = s_cfg.preset, .online_nodes = (uint32_t)node_count()};
+    const edge_mesh_channel_t *p = &s_cfg.channels[0];
+    m.has_default_channel = p->psk_len == 1 && p->psk[0] == 1 && (!p->name[0] || strcmp(s_ch[0].name, p->name) == 0);
+    int32_t la, lo, al;
+    if (s_mod.mqtt_map_location && own_position(&la, &lo, &al)) {
+        uint8_t bits = s_mod.mqtt_map_precision ? s_mod.mqtt_map_precision : 14;
+        m.has_position = true;
+        m.lat_i = mt_position_truncate(la, bits);
+        m.lon_i = mt_position_truncate(lo, bits);
+        m.altitude = al;
+        m.position_precision = bits;
+        m.opted_location = true;
+    }
+    uint8_t mr[200];
+    size_t ml = mt_mapreport_encode(&m, mr, sizeof(mr));
+    if (!ml) return;
+    uint8_t db[240];
+    mt_data_t d = {.portnum = MT_PORT_MAP_REPORT, .payload = mr, .payload_len = ml};
+    size_t dl = mt_data_encode(&d, db, sizeof(db));
+    mt_envelope_t e = {.has_packet = true};
+    e.packet = (mt_packet_t){.from = s_me, .to = MT_BROADCAST, .id = new_packet_id(), .decoded = true, .payload = db,
+                             .payload_len = dl, .rx_time = now_unix_s()};
+    edge_strlcpy(e.channel_id, s_ch[0].name, sizeof(e.channel_id));
+    gateway_id(e.gateway_id);
+    uint8_t out[MQTT_RX_MAX];
+    size_t n = mt_envelope_encode(&e, out, sizeof(out));
+    char topic[MQTT_TOPIC_MAX];
+    snprintf(topic, sizeof(topic), "%s/2/map/", s_mqtt_root);
+    if (n) mesh_mqtt_publish(topic, out, n);
+}
+
+static void mqtt_manage(void)
+{
+    int64_t t = now_ms();
+    if (t < s_mqtt_check && !s_mqtt_restart) return;
+    s_mqtt_check = t + 5000;
+    edge_wifi_info_t wi;
+    bool want = s_mod.mqtt_enabled && s_region && wifi_up(&wi);
+    if (mesh_mqtt_running() && (!want || s_mqtt_restart)) mesh_mqtt_stop();
+    s_mqtt_restart = false;
+    if (want && !mesh_mqtt_running()) {
+        mesh_mqtt_cfg_t mc = {.tls = s_mod.mqtt_tls};
+        edge_strlcpy(mc.host, s_mod.mqtt_address, sizeof(mc.host));
+        char *colon = strchr(mc.host, ':');
+        mc.port = s_mod.mqtt_tls ? 8883 : 1883;
+        if (colon) {
+            *colon = 0;
+            int pt = atoi(colon + 1);
+            if (pt > 0 && pt < 65536) mc.port = (uint16_t)pt;
+        }
+        edge_strlcpy(mc.username, s_mod.mqtt_username, sizeof(mc.username));
+        edge_strlcpy(mc.password, s_mod.mqtt_password, sizeof(mc.password));
+        gateway_id(mc.client_id);
+        bool any_down = false;
+        for (int i = 0; i < s_nch && mc.n_subs < MQTT_SUBS_MAX - 2; i++) {
+            if (!((s_mod.ch_downlink >> i) & 1)) continue;
+            snprintf(mc.subs[mc.n_subs++], MQTT_TOPIC_MAX, "%s/2/e/%s/+", s_mqtt_root, s_ch[i].name);
+            any_down = true;
+        }
+        if (any_down) snprintf(mc.subs[mc.n_subs++], MQTT_TOPIC_MAX, "%s/2/e/PKI/+", s_mqtt_root);
+        if (any_down && s_mod.mqtt_json) snprintf(mc.subs[mc.n_subs++], MQTT_TOPIC_MAX, "%s/2/json/mqtt/#", s_mqtt_root);
+        mesh_mqtt_start(&mc);
+        s_map_next = t + 60000;
+    }
+    if (mesh_mqtt_connected()) {
+        mqtt_downlink();
+        if (s_mod.mqtt_map && t >= s_map_next) {
+            mqtt_map_report();
+            s_map_next = t + (int64_t)s_mod.mqtt_map_interval_s * 1000;
+        }
+    }
+}
+
+/* ---- Store & forward server -------------------------------------------------------------- */
+
+static void sfs_store(uint32_t from, uint32_t to, uint32_t id, int ch, const mt_data_t *d, const uint8_t *text, size_t len)
+{
+    if (!s_sfs_on || ch < 0 || !len) return;
+    sfdb_rec_t r = {.time = now_unix_s(), .from = from, .to = to, .id = id, .reply_id = d ? d->reply_id : 0,
+                    .emoji = d ? d->emoji : 0, .channel = (uint8_t)ch, .len = (uint8_t)(len > SFDB_TEXT_MAX ? SFDB_TEXT_MAX : len)};
+    memcpy(r.text, text, r.len);
+    sfdb_add(&r);
+}
+
+static void sfs_reply_rr(uint32_t to, int ch, uint32_t rr, uint32_t req)
+{
+    uint8_t b[8];
+    size_t l = mt_sf_encode_rr(rr, b, sizeof(b));
+    send_port(to, ch, MT_PORT_STORE_FWD, b, l, false, req, s_cfg.hop_limit);
+}
+
+static void sfs_history(uint32_t client, int ch, uint32_t window_min, uint32_t req)
+{
+    if (s_sfs.num && s_sfs.num != client && s_sfs.idx < s_sfs.n) {
+        sfs_reply_rr(client, ch, MT_SF_ROUTER_BUSY, req);
+        return;
+    }
+    s_sfs_hist_requests++;
+    uint32_t win = s_mod.sf_return_window_min;
+    if (window_min && window_min < win) win = window_min;
+    uint32_t now = now_unix_s();
+    uint32_t since = now > win * 60 ? now - win * 60 : 0;
+    int slot = -1;
+    for (int i = 0; i < 8 && slot < 0; i++) {
+        if (s_sfs_last[i].num == client) slot = i;
+    }
+    uint32_t last = slot >= 0 ? s_sfs_last[slot].last_s : 0;
+    if (last > since) since = last;
+    int n = sfdb_select(since, client, (uint8_t)ch, s_sfs.seqs, s_mod.sf_return_max);
+    uint8_t b[24];
+    size_t l = mt_sf_encode_history(MT_SF_ROUTER_HISTORY, (uint32_t)n, win * 60 * 1000, last, b, sizeof(b));
+    send_port(client, ch, MT_PORT_STORE_FWD, b, l, false, req, s_cfg.hop_limit);
+    s_sfs.num = client;
+    s_sfs.ch = ch;
+    s_sfs.n = n;
+    s_sfs.idx = 0;
+    s_sfs.next_at = now_ms() + 4000;
+    if (now) {
+        if (slot < 0) slot = (int)(client % 8);
+        s_sfs_last[slot].num = client;
+        s_sfs_last[slot].last_s = now;
+    }
+}
+
+static void sfs_service(int64_t t, bool polite)
+{
+    if (!s_sfs_on) return;
+    if (s_sfs.num && t >= s_sfs.next_at) {
+        if (s_sfs.idx >= s_sfs.n) {
+            s_sfs.num = 0;
+        } else if (polite) {
+            sfdb_rec_t r;
+            if (sfdb_read(s_sfs.seqs[s_sfs.idx], &r)) {
+                uint8_t sfb[MESH_MAX_PAYLOAD];
+                size_t sl = mt_sf_encode_text(r.to == MT_BROADCAST ? MT_SF_ROUTER_TEXT_BROADCAST : MT_SF_ROUTER_TEXT_DIRECT,
+                                              r.text, r.len, sfb, sizeof(sfb));
+                mt_data_t d = {.portnum = MT_PORT_STORE_FWD, .payload = sfb, .payload_len = sl, .reply_id = r.reply_id,
+                               .emoji = r.emoji};
+                if (sl) send_data_as(r.from, r.id, s_sfs.num, s_sfs.ch, &d);
+            }
+            s_sfs.idx++;
+            s_sfs.next_at = t + 5000;
+        }
+    }
+    if (s_mod.sf_heartbeat && t >= s_sfs_hb_next) {
+        if (polite) {
+            uint8_t b[16];
+            size_t l = mt_sf_encode_heartbeat(900, 0, b, sizeof(b));
+            send_port(MT_BROADCAST, 0, MT_PORT_STORE_FWD, b, l, false, 0, s_cfg.hop_limit);
+        }
+        s_sfs_hb_next = t + 900 * 1000;
+    }
+}
+
+static void sfs_handle(const mt_header_t *h, int ch, const mt_sf_t *sf)
+{
+    s_sfs_requests++;
+    switch (sf->rr) {
+    case MT_SF_CLIENT_HISTORY:
+        sfs_history(h->from, ch, sf->has_history ? sf->window : 0, h->id);
+        break;
+    case MT_SF_CLIENT_PING:
+        sfs_reply_rr(h->from, ch, MT_SF_ROUTER_PONG, h->id);
+        break;
+    case MT_SF_CLIENT_STATS: {
+        mt_sf_stats_t st = {.messages_total = sfdb_total(), .messages_saved = sfdb_count(), .messages_max = sfdb_capacity(),
+                            .up_time = (uint32_t)(now_ms() / 1000), .requests = s_sfs_requests,
+                            .requests_history = s_sfs_hist_requests, .heartbeat = s_mod.sf_heartbeat,
+                            .return_max = s_mod.sf_return_max, .return_window = s_mod.sf_return_window_min};
+        uint8_t b[64];
+        size_t l = mt_sf_encode_stats(&st, b, sizeof(b));
+        send_port(h->from, ch, MT_PORT_STORE_FWD, b, l, false, h->id, s_cfg.hop_limit);
+        break;
+    }
+    case MT_SF_CLIENT_ABORT:
+        if (s_sfs.num == h->from) s_sfs.num = 0;
+        break;
+    default:
+        break;
+    }
+}
+
+/* ---- ATAK ------------------------------------------------------------------------------ */
+
+#define MAX_TAK 16
+
+typedef struct {
+    bool used;
+    uint32_t node;           /* mesh node that sent it */
+    char uid[48];
+    char callsign[32];
+    uint8_t team, role, battery;
+    bool v2, compressed, has_pos;
+    int32_t lat_i, lon_i, alt;
+    uint16_t speed, course;
+    int64_t at;
+    uint32_t at_s;
+} tak_t;
+
+static tak_t *s_tak;
+static uint32_t s_tak_rx;
+
+static const char *TAK_TEAMS[] = {"", "White", "Yellow", "Orange", "Magenta", "Red", "Maroon", "Purple",
+                                  "Dark Blue", "Blue", "Cyan", "Teal", "Green", "Dark Green", "Brown"};
+static const char *TAK_ROLES[] = {"", "Team Member", "Team Lead", "HQ", "Sniper", "Medic", "Forward Observer", "RTO", "K9"};
+
+static void tak_fill_self(mt_tak_t *t)
+{
+    memset(t, 0, sizeof(*t));
+    t->v2 = true;
+    t->team = s_mod.tak_team ? s_mod.tak_team : 10;  /* Cyan, as Meshtastic */
+    t->role = s_mod.tak_role ? s_mod.tak_role : 1;   /* Team Member */
+    edge_strlcpy(t->callsign, s_cfg.long_name, sizeof(t->callsign));
+    edge_strlcpy(t->device_callsign, s_cfg.long_name, sizeof(t->device_callsign));
+    snprintf(t->uid, sizeof(t->uid), "!%08lx", (unsigned long)s_me);
+    edge_battery_t b;
+    edge_battery_get(&b);
+    t->battery = b.present ? (uint32_t)b.percent : 0;
+}
+
+/* Sends a TAKPacketV2 (port 78, uncompressed: flags 0xFF) on channel ch. */
+static esp_err_t tak_send(const mt_tak_t *t, int ch)
+{
+    uint8_t b[MESH_MAX_PAYLOAD - 24];
+    b[0] = MT_TAK_RAW_FLAGS;
+    size_t n = mt_takv2_encode(t, b + 1, sizeof(b) - 1);
+    if (!n) return ESP_ERR_INVALID_SIZE;
+    return send_port(MT_BROADCAST, ch, MT_PORT_ATAK_V2, b, n + 1, false, 0, s_cfg.hop_limit);
+}
+
+/* Our position as a TAK position report (TAK_TRACKER role), at the channel's precision. */
+static bool tak_send_pli(int ch)
+{
+    int32_t la, lo, al;
+    uint8_t bits = s_ch[ch].precision;
+    if (!own_position(&la, &lo, &al) || !bits) return false;
+    mt_tak_t t;
+    tak_fill_self(&t);
+    t.cot_type = MT_COT_A_F_G_U_C;
+    bool manual = s_cfg.mx.pos_mode == EDGE_POS_FIXED;
+    t.how = manual ? MT_COT_HOW_H_E : MT_COT_HOW_M_G;
+    t.geo_src = t.alt_src = manual ? MT_GEO_SRC_USER : MT_GEO_SRC_GPS;
+    t.has_pos = true;
+    t.lat_i = mt_position_truncate(la, bits);
+    t.lon_i = mt_position_truncate(lo, bits);
+    t.alt = al;
+    return tak_send(&t, ch) == ESP_OK;
+}
+
+static void tak_receive(const mt_header_t *h, int ch, bool pki, const mt_data_t *d, int16_t rssi, float snr)
+{
+    mt_tak_t t;
+    bool ok = d->portnum == MT_PORT_ATAK_V2 ? mt_tak_port78_decode(d->payload, d->payload_len, &t)
+                                            : mt_takv1_decode(d->payload, d->payload_len, &t);
+    if (!ok || !s_tak) return;
+    s_tak_rx++;
+    /* One row per sender: its uid when readable, else its mesh node. */
+    tak_t *slot = NULL;
+    for (int i = 0; i < MAX_TAK && !slot; i++) {
+        tak_t *x = &s_tak[i];
+        if (x->used && (t.uid[0] ? strcmp(x->uid, t.uid) == 0 : (x->node == h->from && !x->uid[0]))) slot = x;
+    }
+    for (int i = 0; i < MAX_TAK && !slot; i++) {
+        if (!s_tak[i].used) slot = &s_tak[i];
+    }
+    if (!slot) {
+        slot = &s_tak[0];
+        for (int i = 1; i < MAX_TAK; i++) {
+            if (s_tak[i].at < slot->at) slot = &s_tak[i];
+        }
+    }
+    if (!slot->used || slot->node != h->from) memset(slot, 0, sizeof(*slot));
+    slot->used = true;
+    slot->node = h->from;
+    slot->v2 = t.v2;
+    slot->compressed = t.compressed;
+    if (t.uid[0]) edge_strlcpy(slot->uid, t.uid, sizeof(slot->uid));
+    if (t.callsign[0]) edge_strlcpy(slot->callsign, t.callsign, sizeof(slot->callsign));
+    if (t.team) slot->team = (uint8_t)(t.team < 15 ? t.team : 0);
+    if (t.role) slot->role = (uint8_t)(t.role < 9 ? t.role : 0);
+    if (t.battery) slot->battery = (uint8_t)(t.battery > 100 ? 100 : t.battery);
+    if (t.has_pos) {
+        slot->has_pos = true;
+        slot->lat_i = t.lat_i;
+        slot->lon_i = t.lon_i;
+        slot->alt = t.alt;
+        slot->speed = (uint16_t)t.speed;
+        slot->course = (uint16_t)t.course;
+    }
+    slot->at = now_ms();
+    slot->at_s = now_unix_s();
+    if (t.has_chat && t.chat[0]) {
+        char text[MAX_TEXT + 34];
+        int l = snprintf(text, sizeof(text), "%s: %s", slot->callsign[0] ? slot->callsign : "?", t.chat);
+        if (l > 0) store_text(h, ch, pki, d, (const uint8_t *)text, (size_t)(l < (int)sizeof(text) ? l : (int)sizeof(text) - 1),
+                              rssi, snr, "[TAK] ");
+    }
+    cJSON *ev = cJSON_CreateObject();
+    cJSON_AddStringToObject(ev, "ev", "mesh_tak");
+    char id[12];
+    node_id_str(h->from, id);
+    cJSON_AddStringToObject(ev, "from", id);
+    edge_events_publish(ev);
+    cJSON_Delete(ev);
+}
+
+/* ---- Remote admin ------------------------------------------------------------------------ */
+
+static void passkey_refresh(void)
+{
+    int64_t t = now_ms();
+    if (s_passkey_at < 0 || t - s_passkey_at > 150000) {
+        esp_fill_random(s_passkey, sizeof(s_passkey));
+        s_passkey_at = t;
+    }
+}
+
+static bool passkey_ok(const uint8_t k[8])
+{
+    return s_passkey_at >= 0 && now_ms() - s_passkey_at < 300000 && memcmp(k, s_passkey, 8) == 0;
+}
+
+static bool admin_key_listed(const node_t *n)
+{
+    if (!n || !(n->flags & NF_PKC)) return false;
+    for (int i = 0; i < s_mod.n_admin_keys; i++) {
+        if (memcmp(s_mod.admin_keys[i], n->pubkey, 32) == 0) return true;
+    }
+    return false;
+}
+
+static bool chan_named(int ch, const char *name)
+{
+    return ch >= 0 && ch < s_nch && strcasecmp(s_ch[ch].name, name) == 0;
+}
+
+static void publish_remote(const char *ev_name, uint32_t from, uint32_t what, const char *outcome)
+{
+    cJSON *ev = cJSON_CreateObject();
+    char id[12];
+    node_id_str(from, id);
+    cJSON_AddStringToObject(ev, "ev", ev_name);
+    cJSON_AddStringToObject(ev, "from", id);
+    cJSON_AddNumberToObject(ev, "request", what);
+    cJSON_AddStringToObject(ev, "outcome", outcome);
+    edge_events_publish(ev);
+    cJSON_Delete(ev);
+}
+
+static void ignore_list_edit(edge_config_t *c, uint32_t num, bool add)
+{
+    int k = 0;
+    for (int i = 0; i < c->mx.n_ignore; i++) {
+        if (c->mx.ignore[i] != num) c->mx.ignore[k++] = c->mx.ignore[i];
+    }
+    c->mx.n_ignore = (uint8_t)k;
+    if (add && c->mx.n_ignore < EDGE_IGNORE_MAX) c->mx.ignore[c->mx.n_ignore++] = num;
+}
+
+static void handle_admin(const mt_header_t *h, int ch, bool pki, const mt_data_t *d)
+{
+    int reply_ch = ch < 0 ? 0 : ch;
+    s_admin_seen++;
+    node_t *n = node_get(h->from, false);
+    bool key_ok = pki && admin_key_listed(n);
+    bool sens_ok = key_ok || (chan_named(ch, "admin") && s_mod.admin_channel);
+    bool allowed = s_mod.admin_enabled && (sens_ok || s_mod.admin_mode == EDGE_ADMIN_OPEN);
+    adm_class_t cls;
+    if (!mesh_admin_classify(d->payload, d->payload_len, &cls) || !cls.variant) {
+        send_routing(h->from, h->id, reply_ch, 32 /* BAD_REQUEST */);
+        return;
+    }
+    uint32_t err = 0;
+    if (!allowed) err = pki ? 37 /* ADMIN_PUBLIC_KEY_UNAUTHORIZED */ : 33 /* NOT_AUTHORIZED */;
+    else if (cls.sensitive && !sens_ok) err = 33;
+    else if (!cls.is_get && !(cls.has_passkey && passkey_ok(cls.passkey))) err = 36; /* ADMIN_BAD_SESSION_KEY */
+    if (err) {
+        s_admin_refused++;
+        send_routing(h->from, h->id, reply_ch, err);
+        publish_remote("mesh_admin", h->from, cls.variant, err == 36 ? "refused: no session key" : "refused");
+        return;
+    }
+    passkey_refresh();
+    struct {
+        edge_config_t cfg;
+        edge_mesh_mod_t mod;
+        adm_result_t res;
+        adm_ctx_t x;
+        edge_wifi_info_t wi;
+    } *w = calloc(1, sizeof(*w));
+    if (!w) return;
+    w->cfg = s_cfg;
+    w->mod = s_mod;
+    adm_ctx_t *x = &w->x;
+    x->my_node = s_me;
+    x->public_key = s_have_keys ? s_pub : NULL;
+    x->fw_version = FW_COMPAT;
+    x->passkey = s_passkey;
+    x->sensitive_ok = sens_ok;
+    x->sf_capacity = sfdb_capacity();
+    x->wifi_connected = wifi_up(&w->wi);
+    if (x->wifi_connected) {
+        unsigned a, b, c2, d2;
+        if (sscanf(w->wi.ip, "%u.%u.%u.%u", &a, &b, &c2, &d2) == 4) x->ip = a | b << 8 | c2 << 16 | d2 << 24;
+        edge_strlcpy(x->ssid, w->wi.ssid, sizeof(x->ssid));
+        x->wifi_rssi = w->wi.rssi;
+    }
+    x->mqtt_connected = mesh_mqtt_connected();
+    if (!mesh_admin_apply(d->payload, d->payload_len, x, &w->cfg, &w->mod, &w->res)) {
+        send_routing(h->from, h->id, reply_ch, 32);
+        free(w);
+        return;
+    }
+    adm_result_t *r = &w->res;
+    if (r->reply_len) send_port(h->from, reply_ch, MT_PORT_ADMIN, r->reply, r->reply_len, false, h->id, s_cfg.hop_limit);
+    if (r->ign_set || r->ign_clear) {
+        if (r->ign_set) ignore_list_edit(&w->cfg, r->ign_set, true);
+        if (r->ign_clear) ignore_list_edit(&w->cfg, r->ign_clear, false);
+        r->cfg_changed = true;
+    }
+    if (r->factory_config) {
+        edge_config_t keep = w->cfg;
+        edge_config_defaults(&w->cfg);
+        w->cfg.mode = keep.mode;
+        w->cfg.link_mode = keep.link_mode;
+        w->cfg.node_num = keep.node_num;
+        edge_strlcpy(w->cfg.long_name, keep.long_name, sizeof(w->cfg.long_name));
+        edge_strlcpy(w->cfg.short_name, keep.short_name, sizeof(w->cfg.short_name));
+        edge_mod_defaults(&w->mod);
+        r->cfg_changed = r->mod_changed = true;
+    }
+    if (r->cfg_changed) {
+        if (w->cfg.link_mode != s_cfg.link_mode) s_wifi_reconf = true;
+        edge_config_set(&w->cfg);
+    }
+    if (r->mod_changed) edge_mod_set(&w->mod);
+    int64_t t = now_ms();
+    if (r->cfg_changed || r->mod_changed) s_reload_at = t + 3000; /* after the reply has gone out */
+    if (r->owner_changed) s_nodeinfo_at = t + 8000;
+    if (r->wifi_add) edge_wifi_net_add(r->wifi_ssid, r->wifi_psk);
+    if (r->set_time && r->time > 1600000000u) edge_time_set_unix_ms((int64_t)r->time * 1000, "mesh admin");
+    uint32_t nums[] = {r->fav_set, r->fav_clear, r->ign_set, r->ign_clear};
+    for (int i = 0; i < 4; i++) {
+        node_t *nn = nums[i] ? node_get(nums[i], false) : NULL;
+        if (!nn) continue;
+        if (i == 0) nn->flags |= NF_FAV;
+        if (i == 1) nn->flags &= (uint8_t)~NF_FAV;
+        if (i == 2) nn->flags |= NF_IGNORE;
+        if (i == 3) nn->flags &= (uint8_t)~NF_IGNORE;
+        s_dirty = true;
+    }
+    if (r->remove_node) {
+        node_t *nn = node_get(r->remove_node, false);
+        if (nn) {
+            memset(nn, 0, sizeof(*nn));
+            s_dirty = true;
+        }
+    }
+    if (r->add_contact) {
+        node_t *nn = node_get(r->contact_num, true);
+        if (nn) {
+            nn->flags |= NF_USER;
+            edge_strlcpy(nn->long_name, r->contact_long, sizeof(nn->long_name));
+            edge_strlcpy(nn->short_name, r->contact_short, sizeof(nn->short_name));
+            nn->hw_model = (uint8_t)r->contact_hw;
+            if (r->contact_has_key) {
+                memcpy(nn->pubkey, r->contact_key, 32);
+                nn->flags |= NF_PKC;
+                nn->key_ok = false;
+            }
+            s_dirty = true;
+        }
+    }
+    if (r->nodedb_reset) {
+        memset(s_nodes, 0, MAX_NODES * sizeof(node_t));
+        s_dirty = true;
+    }
+    if (r->factory_device) edge_app_factory_reset_later(3000);
+    if (r->reboot_s >= 0) s_reboot_at = t + (int64_t)r->reboot_s * 1000 + 3000;
+    publish_remote("mesh_admin", h->from, cls.variant, r->unsupported ? "not supported" : cls.is_get ? "answered" : "applied");
+    if (!cls.is_get && !r->unsupported) {
+        char det[40];
+        snprintf(det, sizeof(det), "remote admin from !%08lx", (unsigned long)h->from);
+        edge_record_event(EDGE_EVT_CONFIG, det);
+    }
+    free(w);
+}
+
+/* ---- Remote hardware ------------------------------------------------------------------- */
+
+static bool pin_in_use(int g)
+{
+    const edge_mesh_ext_t *x = &s_cfg.mx;
+    return g == x->serial_rx || g == x->serial_tx || g == x->detect_gpio || g == x->notify_gpio || g == s_mod.audio_ptt ||
+           g == s_mod.i2s_ws || g == s_mod.i2s_sd || g == s_mod.i2s_din || g == s_mod.i2s_sck;
+}
+
+static uint64_t rhw_allowed(bool write)
+{
+    uint64_t m = 0;
+    for (int i = 0; i < s_mod.n_pins; i++) {
+        int g = s_mod.pins[i].gpio;
+        if (edge_pin_protected(g) || pin_in_use(g)) continue;
+        if (!write || s_mod.pins[i].type == EDGE_RHW_WRITE) m |= 1ULL << g;
+    }
+    if (s_mod.rhw_undefined_ok) {
+        for (int g = 0; g <= 48; g++) {
+            if (!edge_pin_protected(g) && !pin_in_use(g) && GPIO_IS_VALID_GPIO(g)) m |= 1ULL << g;
+        }
+    }
+    return m;
+}
+
+static uint64_t rhw_read(uint64_t mask)
+{
+    uint64_t v = 0;
+    for (int g = 0; g <= 48; g++) {
+        if (!(mask & (1ULL << g))) continue;
+        if (!(s_rhw_out & (1ULL << g))) gpio_set_direction(g, GPIO_MODE_INPUT);
+        if (gpio_get_level(g)) v |= 1ULL << g;
+    }
+    return v;
+}
+
+static void handle_rhw(const mt_header_t *h, int ch, bool pki, const mt_data_t *d)
+{
+    if (!s_mod.rhw_enabled || h->to != s_me) return;
+    int reply_ch = ch < 0 ? 0 : ch;
+    bool allowed = (pki && admin_key_listed(node_get(h->from, false))) || chan_named(ch, "gpio") ||
+                   (chan_named(ch, "admin") && s_mod.admin_channel) || s_mod.admin_mode == EDGE_ADMIN_OPEN;
+    if (!allowed) {
+        send_routing(h->from, h->id, reply_ch, 33);
+        publish_remote("mesh_rhw", h->from, 0, "refused");
+        return;
+    }
+    mt_hw_t m;
+    if (!mt_hw_decode(d->payload, d->payload_len, &m)) return;
+    switch (m.type) {
+    case MT_HW_WRITE_GPIOS: {
+        uint64_t mask = m.mask & rhw_allowed(true);
+        for (int g = 0; g <= 48; g++) {
+            if (!(mask & (1ULL << g))) continue;
+            gpio_set_direction(g, GPIO_MODE_INPUT_OUTPUT);
+            gpio_set_level(g, (m.value >> g) & 1);
+            s_rhw_out |= 1ULL << g;
+        }
+        break;
+    }
+    case MT_HW_READ_GPIOS: {
+        uint64_t mask = m.mask & rhw_allowed(false);
+        mt_hw_t rep = {.type = MT_HW_READ_GPIOS_REPLY, .mask = mask, .value = rhw_read(mask)};
+        uint8_t b[32];
+        size_t l = mt_hw_encode(&rep, b, sizeof(b));
+        send_port(h->from, reply_ch, MT_PORT_REMOTE_HW, b, l, false, h->id, s_cfg.hop_limit);
+        break;
+    }
+    case MT_HW_WATCH_GPIOS:
+        s_rhw_watch = m.mask & rhw_allowed(false);
+        s_rhw_watcher = h->from;
+        s_rhw_ch = reply_ch;
+        s_rhw_last = rhw_read(s_rhw_watch);
+        break;
+    default:
+        break;
+    }
+    publish_remote("mesh_rhw", h->from, m.type, "done");
+}
+
+static void rhw_poll(int64_t t)
+{
+    if (!s_rhw_watch || t - s_rhw_sent < 1000) return;
+    uint64_t v = rhw_read(s_rhw_watch);
+    if (v == s_rhw_last) return;
+    s_rhw_last = v;
+    s_rhw_sent = t;
+    mt_hw_t rep = {.type = MT_HW_GPIOS_CHANGED, .mask = s_rhw_watch, .value = v};
+    uint8_t b[32];
+    size_t l = mt_hw_encode(&rep, b, sizeof(b));
+    send_port(s_rhw_watcher, s_rhw_ch, MT_PORT_REMOTE_HW, b, l, false, 0, s_cfg.hop_limit);
+}
+
 /* ---- Receive handlers ------------------------------------------------------------------ */
 
 static void notify_message(const char *text)
@@ -872,7 +1757,25 @@ static bool handle_data(const mt_header_t *h, int ch, bool pki, const mt_data_t 
     int reply_ch = ch < 0 ? 0 : ch;
     switch (d->portnum) {
     case MT_PORT_TEXT:
+        if (s_sfs_on && for_me && d->payload_len == 2 && strncasecmp((const char *)d->payload, "SF", 2) == 0) {
+            sfs_history(h->from, reply_ch, 0, h->id); /* "SF" typed to a server asks for history */
+            break;
+        }
+        if (s_sfs_on && !pki && ch >= 0) sfs_store(h->from, h->to, h->id, ch, d, d->payload, d->payload_len);
         if (for_us && d->payload_len) store_text(h, ch, pki, d, d->payload, d->payload_len, rssi, snr, NULL);
+        break;
+    case MT_PORT_ADMIN:
+        if (for_me) handle_admin(h, ch, pki, d);
+        break;
+    case MT_PORT_REMOTE_HW:
+        if (for_me) handle_rhw(h, ch, pki, d);
+        break;
+    case MT_PORT_AUDIO:
+        s_audio_frames++; /* codec2 playback needs the speaker hardware (not fitted) */
+        break;
+    case MT_PORT_ATAK:
+    case MT_PORT_ATAK_V2:
+        if (for_us && d->payload_len) tak_receive(h, ch, pki, d, rssi, snr);
         break;
     case MT_PORT_RANGE_TEST:
         if (for_us && d->payload_len) store_text(h, ch, pki, d, d->payload, d->payload_len, rssi, snr, "[range test] ");
@@ -990,6 +1893,10 @@ static bool handle_data(const mt_header_t *h, int ch, bool pki, const mt_data_t 
     case MT_PORT_STORE_FWD: {
         mt_sf_t sf;
         if (!mt_sf_decode(d->payload, d->payload_len, &sf)) break;
+        if (s_sfs_on && for_me && sf.rr >= MT_SF_CLIENT_ERROR) {
+            sfs_handle(h, reply_ch, &sf);
+            break;
+        }
         if (sf.rr == MT_SF_ROUTER_HEARTBEAT) {
             int slot = -1;
             for (int i = 0; i < MAX_SF_ROUTERS && slot < 0; i++) {
@@ -1097,9 +2004,10 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
     mt_header_read(buf, &h);
     uint8_t *payload = buf + MESH_HEADER_LEN;
     size_t plen = len - MESH_HEADER_LEN;
-    air_add(mesh_airtime_ms(s_preset, len), false);
+    if (!s_rx_from_mqtt) air_add(mesh_airtime_ms(s_preset, len), false);
 
-    if (is_ignored(h.from) || ((h.flags & MT_FLAG_VIA_MQTT) && s_cfg.mx.ignore_mqtt)) {
+    /* ignore_mqtt covers packets heard over LoRa that crossed MQTT elsewhere, not our own downlink */
+    if (is_ignored(h.from) || ((h.flags & MT_FLAG_VIA_MQTT) && s_cfg.mx.ignore_mqtt && !s_rx_from_mqtt)) {
         s_st.ignored++;
         return;
     }
@@ -1121,7 +2029,10 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
     s_st.rx_ok++;
 
     node_t *n = node_get(h.from, true);
-    if (n) {
+    if (n && s_rx_from_mqtt) {
+        n->last_heard_up = now_ms();
+        n->last_heard_s = now_unix_s();
+    } else if (n) {
         n->last_heard_up = now_ms();
         n->last_heard_s = now_unix_s();
         n->rssi = rssi;
@@ -1155,6 +2066,7 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
     uint8_t relay_plain[MESH_MAX_PAYLOAD];
     size_t relay_len = 0;
     bool modified = false;
+    if (decoded || ch_idx >= 0) mqtt_uplink(buf, len, ch_idx, pki, decoded ? &d : NULL, false, rssi, snr);
     if (decoded) {
         modified = handle_data(&h, ch_idx, pki, &d, rssi, snr, ch_idx >= 0 ? relay_plain : NULL, &relay_len);
         if (h.to == s_me && mt_want_ack(&h) && s_cfg.mx.tx_enabled) {
@@ -1448,8 +2360,12 @@ bool mesh_led(int64_t t, bool *on)
 static void apply_config(void)
 {
     edge_config_get(&s_cfg);
+    edge_mod_get(&s_mod);
     s_me = s_cfg.node_num;
     s_have_keys = edge_pki_get(s_priv, s_pub) == ESP_OK;
+    s_sfs_on = s_mod.sf_enabled && sfdb_ready();
+    s_mqtt_restart = true;
+    s_mqtt_public = strstr(s_mod.mqtt_address, "mqtt.meshtastic.org") != NULL;
     s_region = mesh_region_by_code(s_cfg.region);
     s_preset = mesh_preset_by_code(s_cfg.preset);
     if (!s_preset) s_preset = mesh_preset_by_code(0);
@@ -1471,6 +2387,12 @@ static void apply_config(void)
             s_nodes[i].flags &= (uint8_t)~NF_IGNORE;
         }
     }
+    if (s_mod.mqtt_root[0]) {
+        edge_strlcpy(s_mqtt_root, s_mod.mqtt_root, sizeof(s_mqtt_root));
+    } else {
+        snprintf(s_mqtt_root, sizeof(s_mqtt_root), "msh/%s", s_region ? s_region->name : "UNSET");
+    }
+    if (s_rhw_watch && !s_mod.rhw_enabled) s_rhw_watch = 0;
     if (!s_region) {
         s_freq = 0;
         ESP_LOGW(TAG, "LoRa region not set: radio stays silent");
@@ -1505,6 +2427,8 @@ static void free_state(void)
     free(s_nodes);
     free(s_msgs);
     free(s_wps);
+    free(s_tak);
+    s_tak = NULL;
     s_txq = NULL;
     s_pending = NULL;
     s_seen = NULL;
@@ -1522,7 +2446,8 @@ static void do_start(void)
     s_nodes = calloc(MAX_NODES, sizeof(node_t));
     s_msgs = calloc(MAX_MSGS, sizeof(msg_t));
     s_wps = calloc(MAX_WAYPOINTS, sizeof(wp_t));
-    if (!s_txq || !s_pending || !s_seen || !s_nodes || !s_msgs || !s_wps) {
+    s_tak = calloc(MAX_TAK, sizeof(tak_t));
+    if (!s_txq || !s_pending || !s_seen || !s_nodes || !s_msgs || !s_wps || !s_tak) {
         ESP_LOGE(TAG, "not enough memory for the mesh");
         free_state();
         return;
@@ -1549,6 +2474,7 @@ static void do_stop(void)
 {
     if (!s_running) return;
     periph_stop();
+    mesh_mqtt_stop();
     if (s_dirty) db_save();
     s_running = false;
     s_tx_busy = false;
@@ -1715,7 +2641,9 @@ static void service_periodic(void)
     }
     if (t >= s_next_position) {
         if (polite && have_pos && !hidden && role != EDGE_ROLE_REPEATER && s_ch[0].precision) {
-            send_position(MT_BROADCAST, 0, false, 0);
+            /* TAK trackers report as a TAK position (ATAK plugin v2), like Meshtastic */
+            if (role == EDGE_ROLE_TAK_TRACKER) tak_send_pli(0);
+            else send_position(MT_BROADCAST, 0, false, 0);
         }
         uint32_t every = x->pos_interval_s;
         if ((role == EDGE_ROLE_TRACKER || role == EDGE_ROLE_TAK_TRACKER) && every > 300) every = 300;
@@ -1761,6 +2689,23 @@ static void service_periodic(void)
         }
         s_next_lost = t + (int64_t)x->pos_interval_s * 1000;
     }
+    sfs_service(t, polite);
+    rhw_poll(t);
+    mqtt_manage();
+    if (s_reload_at && t >= s_reload_at) {
+        s_reload_at = 0;
+        periph_stop();
+        apply_config();
+        periph_start();
+        if (s_wifi_reconf) {
+            s_wifi_reconf = false;
+            edge_wifi_reconfigure();
+        }
+    }
+    if (s_nodeinfo_at && t >= s_nodeinfo_at) {
+        s_nodeinfo_at = 0;
+        send_nodeinfo(MT_BROADCAST, false);
+    }
     uint32_t nowu = now_unix_s();
     for (int i = 0; nowu && i < MAX_WAYPOINTS; i++) {
         if (s_wps[i].used && s_wps[i].w.expire && s_wps[i].w.expire < nowu) s_wps[i].used = false;
@@ -1793,6 +2738,12 @@ static void mesh_task(void *arg)
     } else {
         ESP_LOGE(TAG, "LoRa radio unavailable: %s", esp_err_to_name(err));
     }
+    if (s_cfg.mode != EDGE_MODE_MESH) {
+        /* Awareness boot: the radio sleeps and this task's memory goes back to sensing.
+         * Switching to Mesh restarts the Edge. */
+        s_task = NULL;
+        vTaskDelete(NULL);
+    }
     for (;;) {
         uint32_t wait = s_running ? next_wait_ms() : 1000;
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));
@@ -1819,6 +2770,10 @@ static void mesh_task(void *arg)
             }
         }
         xSemaphoreGive(s_lock);
+        if (s_reboot_at && now_ms() >= s_reboot_at) {
+            s_reboot_at = 0;
+            edge_app_reboot_later(200);
+        }
     }
 }
 
@@ -1828,8 +2783,10 @@ esp_err_t mesh_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
     edge_config_get(&s_cfg);
+    edge_mod_get(&s_mod);
     s_me = s_cfg.node_num;
-    if (xTaskCreatePinnedToCore(mesh_task, "mesh", 6144, NULL, 6, &s_task, 1) != pdPASS) return ESP_ERR_NO_MEM;
+    if (s_cfg.mode == EDGE_MODE_MESH) sfdb_init();
+    if (xTaskCreatePinnedToCore(mesh_task, "mesh", 7168, NULL, 6, &s_task, 1) != pdPASS) return ESP_ERR_NO_MEM;
     return ESP_OK;
 }
 
@@ -1885,6 +2842,10 @@ esp_err_t mesh_send_text(uint32_t to, uint8_t channel, const char *text, bool wa
         m->emoji = emoji;
         edge_strlcpy(m->status, "queued", sizeof(m->status));
         edge_sanitize_text(m->text, sizeof(m->text), (const uint8_t *)text, len);
+        if (to == MT_BROADCAST && !pki) {
+            mt_data_t sd = {.reply_id = reply_id, .emoji = emoji};
+            sfs_store(s_me, to, id, channel, &sd, (const uint8_t *)text, len);
+        }
         log_text(s_me, to, id, channel, s_cfg.hop_limit, 0, 0, true, text, len);
         if (out_id) *out_id = id;
     }
@@ -2108,6 +3069,30 @@ cJSON *mesh_status_json(void)
         node_id_str(s_sf[i].num, id);
         cJSON_AddItemToArray(sf, cJSON_CreateString(id));
     }
+    cJSON *adm = cJSON_AddObjectToObject(o, "admin");
+    cJSON_AddBoolToObject(adm, "enabled", s_mod.admin_enabled);
+    cJSON_AddStringToObject(adm, "mode", s_mod.admin_mode == EDGE_ADMIN_KEYS ? "keys" : "open");
+    cJSON_AddNumberToObject(adm, "keys", s_mod.n_admin_keys);
+    cJSON_AddNumberToObject(adm, "requests", s_admin_seen);
+    cJSON_AddNumberToObject(adm, "refused", s_admin_refused);
+    cJSON *sfs = cJSON_AddObjectToObject(o, "store_forward_server");
+    cJSON_AddBoolToObject(sfs, "enabled", s_sfs_on);
+    cJSON_AddBoolToObject(sfs, "storage", sfdb_ready());
+    cJSON_AddNumberToObject(sfs, "stored", sfdb_count());
+    cJSON_AddNumberToObject(sfs, "capacity", sfdb_capacity());
+    cJSON_AddNumberToObject(sfs, "history_requests", s_sfs_hist_requests);
+    if (s_sfs.num) {
+        node_id_str(s_sfs.num, id);
+        cJSON_AddStringToObject(sfs, "sending_to", id);
+    }
+    cJSON_AddItemToObject(o, "mqtt", mesh_mqtt_status_json());
+    if (s_rhw_watch || s_rhw_out) {
+        cJSON *rh = cJSON_AddObjectToObject(o, "remote_hardware");
+        cJSON_AddNumberToObject(rh, "outputs_mask", (double)s_rhw_out);
+        cJSON_AddNumberToObject(rh, "watch_mask", (double)s_rhw_watch);
+    }
+    if (s_audio_frames) cJSON_AddNumberToObject(o, "audio_frames_heard", s_audio_frames);
+    cJSON_AddNumberToObject(o, "tak_packets_heard", s_tak_rx);
     if (s_pax_on) {
         cJSON *p = cJSON_AddObjectToObject(o, "paxcounter");
         cJSON_AddNumberToObject(p, "ble", s_pax_nb);
@@ -2184,6 +3169,82 @@ cJSON *mesh_waypoints_json(void)
         if (w->w.icon) cJSON_AddNumberToObject(o, "icon", w->w.icon);
         if (w->at_s) cJSON_AddNumberToObject(o, "unix_s", w->at_s);
         cJSON_AddStringToObject(o, "provenance", "NETWORK");
+        cJSON_AddItemToArray(a, o);
+    }
+    xSemaphoreGive(s_lock);
+    return a;
+}
+
+/* ---- ATAK API ---------------------------------------------------------------------------- */
+
+esp_err_t mesh_tak_send_chat(const char *text, uint8_t channel)
+{
+    if (!text || !text[0] || strlen(text) > MAX_TEXT) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = running_ok();
+    if (err == ESP_OK) {
+        mt_tak_t t;
+        tak_fill_self(&t);
+        t.cot_type = MT_COT_B_T_F;
+        t.has_chat = true;
+        edge_strlcpy(t.chat, text, sizeof(t.chat));
+        edge_strlcpy(t.chat_to, "All Chat Rooms", sizeof(t.chat_to));
+        err = tak_send(&t, channel);
+        if (err == ESP_OK) {
+            msg_t *m = msg_add();
+            m->outgoing = true;
+            m->from = s_me;
+            m->to = MT_BROADCAST;
+            m->channel = channel;
+            edge_strlcpy(m->status, "sent", sizeof(m->status));
+            snprintf(m->text, sizeof(m->text), "[TAK] %s: %s", t.callsign, text);
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+esp_err_t mesh_tak_send_position(uint8_t channel)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = running_ok();
+    if (err == ESP_OK && (channel >= s_nch || !tak_send_pli(channel))) err = ESP_ERR_NOT_FOUND;
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+cJSON *mesh_tak_json(void)
+{
+    cJSON *a = cJSON_CreateArray();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; s_tak && i < MAX_TAK; i++) {
+        const tak_t *x = &s_tak[i];
+        if (!x->used) continue;
+        cJSON *o = cJSON_CreateObject();
+        char id[12];
+        node_id_str(x->node, id);
+        cJSON_AddStringToObject(o, "node", id);
+        char c[sizeof(x->callsign)];
+        edge_sanitize_text(c, sizeof(c), (const uint8_t *)x->callsign, strlen(x->callsign));
+        cJSON_AddStringToObject(o, "callsign", c);
+        edge_sanitize_text(c, sizeof(c), (const uint8_t *)x->uid, strlen(x->uid) < sizeof(c) ? strlen(x->uid) : sizeof(c) - 1);
+        cJSON_AddStringToObject(o, "uid", c);
+        cJSON_AddStringToObject(o, "team", TAK_TEAMS[x->team < 15 ? x->team : 0]);
+        cJSON_AddStringToObject(o, "role", TAK_ROLES[x->role < 9 ? x->role : 0]);
+        if (x->battery) cJSON_AddNumberToObject(o, "battery", x->battery);
+        cJSON_AddStringToObject(o, "plugin", x->v2 ? "v2" : "v1");
+        cJSON_AddBoolToObject(o, "compressed", x->compressed);
+        if (x->has_pos) {
+            cJSON *p = cJSON_AddObjectToObject(o, "reported_position");
+            cJSON_AddNumberToObject(p, "lat", x->lat_i / 1e7);
+            cJSON_AddNumberToObject(p, "lon", x->lon_i / 1e7);
+            cJSON_AddNumberToObject(p, "alt_m", x->alt);
+            cJSON_AddNumberToObject(p, "speed_mps", x->speed);
+            cJSON_AddNumberToObject(p, "course_deg", x->course / 100.0);
+            cJSON_AddStringToObject(p, "provenance", "NETWORK");
+        }
+        cJSON_AddNumberToObject(o, "ago_s", (double)((now_ms() - x->at) / 1000));
+        if (x->at_s) cJSON_AddNumberToObject(o, "unix_s", x->at_s);
         cJSON_AddItemToArray(a, o);
     }
     xSemaphoreGive(s_lock);

@@ -19,7 +19,7 @@ idf_component_register(
         "ssd1306.c"
         "ui.c"
         "mesh/mesh.c"
-        "mesh/mesh_pb.c" "mesh/mesh_crypto.c"
+        "mesh/mesh_pb.c" "mesh/mesh_crypto.c" "mesh/mesh_pb_ext.c" "mesh/mesh_admin.c" "mesh/mesh_sfdb.c" "mesh/mesh_mqtt.c"
         "mesh/mesh_radio.c"
         "mesh/sx1262.c"
     INCLUDE_DIRS "." "mesh"

@@ -154,6 +154,7 @@ body:not([data-ctx=on]):not([data-ctx=off]) .ctx-avail-only{display:none!importa
 <main>
 
 <section id="tab-overview" class="tab active">
+  <p class="cap" id="updatedLine" style="margin:0 0 8px"></p>
   <div class="card">
     <div class="card-head"><span class="label">Mode</span><span id="modeChip2" class="chip"></span></div>
     <div class="modecard">
@@ -206,6 +207,12 @@ body:not([data-ctx=on]):not([data-ctx=off]) .ctx-avail-only{display:none!importa
   <div class="card"><div class="card-head"><span class="label">Nodes heard</span><span class="chip net">Network</span></div>
     <ul class="list" id="nodeList"></ul>
     <p class="note">Positions, if any, are reported by the nodes themselves over the mesh, not measured by this Edge. Signal figures describe the last packet's reception only.</p></div>
+  <div class="card"><div class="card-head"><span class="label">ATAK</span><span class="chip net">Network</span></div>
+    <ul class="list" id="takList"></ul>
+    <label class="f" for="takText">TAK chat to all chat rooms</label>
+    <input id="takText" maxlength="200" autocomplete="off">
+    <div class="actions"><button class="btn small" id="takSend">Send TAK chat</button><button class="btn small" id="takPos">Send my TAK position</button></div>
+    <p class="note">Positions and GeoChat from ATAK users, through the Meshtastic ATAK plugin (v1 and v2). Packets the plugin compressed are relayed but cannot be read here. Positions are what each device reported, not something this Edge measured.</p></div>
   <div class="card hidden" id="traceCard"><div class="card-head"><span class="label">Route checks</span><span class="chip net">Network</span></div><div id="traceList"></div>
     <p class="note">Each step is a node that relayed the request, with the signal-to-noise ratio it received it at. It describes radio links, not distance or direction.</p></div>
   <div class="card"><div class="card-head"><span class="label">Waypoints</span><span class="chip net">Network</span></div>
@@ -377,6 +384,71 @@ body:not([data-ctx=on]):not([data-ctx=off]) .ctx-avail-only{display:none!importa
     <label class="f" for="mCanned">Quick messages · one per line, up to 8, 39 bytes each</label>
     <textarea id="mCanned" rows="4"></textarea>
     <p class="cap">Also on the Edge: on the LoRa screen, double-press the button to pick one, hold it to send on the primary channel.</p>
+  </div>
+  <div class="card mesh-only">
+    <div class="label">ATAK</div>
+    <div class="fields">
+      <div><label class="f" for="mTakTeam">Team colour</label><select id="mTakTeam"></select></div>
+      <div><label class="f" for="mTakRole">Team role</label><select id="mTakRole"></select></div>
+    </div>
+    <p class="cap">Used in TAK position reports and TAK chat. With the role "TAK position beacon", the Edge reports its position as a TAK position (ATAK plugin v2) instead of a Meshtastic position, so ATAK users see it on their map.</p>
+  </div>
+  <div class="card mesh-only">
+    <div class="card-head"><span class="label">Remote admin and hardware</span></div>
+    <div class="banner hidden" id="adminWarn" style="margin:6px 0 10px">Remote admin is open: any node in radio range can change this Edge's mesh settings, read its configuration and restart it. Add your own node's public key below and choose "Only admin keys".</div>
+    <label class="sw"><span class="grow"><span class="t">Remote admin</span><div class="cap">Lets Meshtastic apps change this Edge's mesh settings over the air, using Meshtastic's session keys. Wi-Fi, security, MQTT, channel and remote hardware settings, and factory resets, need an admin key.</div></span><input type="checkbox" id="mAdmin"><span class="knob"></span></label>
+    <div class="seg" role="radiogroup" aria-label="Who may administer" id="mAdminMode"><button data-v="open">Any node</button><button data-v="keys">Only admin keys</button></div>
+    <label class="f" for="mAdminKeys">Admin public keys · one per line, up to 3</label>
+    <textarea id="mAdminKeys" class="mono" rows="3" placeholder="base64 public key of your own node"></textarea>
+    <div class="fields"><div><label class="f" for="mAdminPick">Add the key of a node heard</label><select id="mAdminPick"></select></div></div>
+    <label class="sw"><span class="grow"><span class="t">Accept the legacy "admin" channel</span><div class="cap">Older apps administer through a shared channel named admin. Anyone with that channel's key gets full access.</div></span><input type="checkbox" id="mAdminChan"><span class="knob"></span></label>
+    <span class="label" style="display:block;margin-top:16px">Remote hardware</span>
+    <label class="sw"><span class="grow"><span class="t">Remote GPIO</span><div class="cap">Lets the same senders read, set and watch the pins listed here. Pins the board uses itself are always refused.</div></span><input type="checkbox" id="mRhw"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Allow pins not listed</span></span><input type="checkbox" id="mRhwAny"><span class="knob"></span></label>
+    <div id="rhwRows"></div>
+    <div class="actions"><button class="btn small" id="rhwAdd">Add pin</button></div>
+  </div>
+  <div class="card mesh-only">
+    <div class="label">Store and forward server</div>
+    <label class="sw"><span class="grow"><span class="t">Keep channel messages for nodes that were away</span><div class="cap">Text heard on your channels is kept in the Edge's flash and sent back to nodes that ask for it. Messages from other nodes are kept only on channels this Edge can read.</div></span><input type="checkbox" id="mSfs"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Announce the server</span><div class="cap">A short heartbeat every 15 minutes so nodes know they can ask.</div></span><input type="checkbox" id="mSfsHb"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="mSfsMax">Messages per request</label><input id="mSfsMax" type="number" min="1" max="100"></div>
+      <div><label class="f" for="mSfsWin">Look back (minutes)</label><input id="mSfsWin" type="number" min="1" max="10080"></div>
+    </div>
+    <p class="cap" id="mSfsNote"></p>
+  </div>
+  <div class="card mesh-only">
+    <div class="label">MQTT</div>
+    <label class="sw"><span class="grow"><span class="t">Connect to an MQTT broker</span><div class="cap">While the Edge is on your Wi-Fi it can pass mesh packets to and from a broker, as Meshtastic gateways do. Pick per channel above whether packets go up, come down, or both.</div></span><input type="checkbox" id="mMqtt"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="mMqttAddr">Server (host or host:port)</label><input id="mMqttAddr" class="mono" maxlength="63" autocomplete="off"></div>
+      <div><label class="f" for="mMqttRoot">Root topic (empty = msh/region)</label><input id="mMqttRoot" class="mono" maxlength="31" autocomplete="off"></div>
+      <div><label class="f" for="mMqttUser">Username</label><input id="mMqttUser" maxlength="31" autocomplete="off"></div>
+      <div><label class="f" for="mMqttPass">Password</label><input id="mMqttPass" type="password" maxlength="63" autocomplete="new-password"></div>
+    </div>
+    <label class="sw"><span class="grow"><span class="t">TLS</span><div class="cap">Encrypts the connection to the broker (port 8883 unless given).</div></span><input type="checkbox" id="mMqttTls"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Keep packets encrypted</span><div class="cap">Uploads packets with their channel encryption, so only holders of the channel key can read them. Off uploads them readable.</div></span><input type="checkbox" id="mMqttEnc"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Also publish JSON</span><div class="cap">Readable copies of text, position, node info and telemetry. Not sent to the public Meshtastic broker.</div></span><input type="checkbox" id="mMqttJson"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Map reports</span><div class="cap">Publishes this node's name, role and settings for community maps.</div></span><input type="checkbox" id="mMqttMap"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Include position in map reports</span><div class="cap">Rounded to the precision below.</div></span><input type="checkbox" id="mMqttMapLoc"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="mMqttMapInt">Map report every (s, at least 900)</label><input id="mMqttMapInt" type="number" min="900" max="86400"></div>
+      <div><label class="f" for="mMqttMapPrec">Map position precision</label><select id="mMqttMapPrec"></select></div>
+    </div>
+    <p class="cap">Packets from other nodes go up only when their sender allowed it ("OK to upload to MQTT"). The broker sees what the Edge publishes and when it is online.</p>
+  </div>
+  <div class="card mesh-only">
+    <div class="label">Audio</div>
+    <label class="sw"><span class="grow"><span class="t">Voice over LoRa (codec2)</span><div class="cap">Needs a microphone, a speaker or headphone amplifier on I2S, and a push-to-talk button. The Heltec V3 has none built in. The settings are kept for when they are wired; until then voice is neither sent nor played.</div></span><input type="checkbox" id="mAudio"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="mAudioRate">Codec2 bitrate</label><select id="mAudioRate"></select></div>
+      <div><label class="f" for="mAudioPtt">Push-to-talk GPIO</label><input id="mAudioPtt" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mI2sWs">I2S WS GPIO</label><input id="mI2sWs" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mI2sSd">I2S SD (mic) GPIO</label><input id="mI2sSd" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mI2sDin">I2S DIN (speaker) GPIO</label><input id="mI2sDin" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mI2sSck">I2S SCK GPIO</label><input id="mI2sSck" type="number" min="-1" max="48"></div>
+    </div>
   </div>
   <div class="card mesh-only">
     <div class="label">Advanced radio</div>
@@ -557,7 +629,8 @@ function showTab(name) {
   $$("nav.tabs button").forEach((x) => x.setAttribute("aria-selected", x.dataset.tab === name));
   $$("section.tab").forEach((s) => s.classList.toggle("active", s.id === "tab-" + name));
   if (name === "mesh") refreshMesh();
-  if (name === "wifi") refreshWifi();
+  if (name === "wifi") { Live.mark("wifi"); refreshWifi(); }
+  if (name === "obs") Live.mark("obs");
   if (name === "settings") fillSettings();
   if (name === "context") Ctx.open(); else Ctx.close();
 }
@@ -597,6 +670,8 @@ function fmtU(v, u) { return v == null ? "-" : Math.round(v) + " " + u; }
 /* ---------------------------------------------------------------- overview */
 function renderStatus(s) {
   S.status = s;
+  S.lastStatusAt = Date.now();
+  Live.freshness();
   const mesh = s.mode === "mesh";
   const mc = $("#modeChip"); mc.className = "chip " + (mesh ? "net" : "sensed"); mc.lastChild.textContent = mesh ? "Mesh" : "Awareness";
   $("#modeName").textContent = mesh ? "Mesh" : "Awareness";
@@ -649,14 +724,15 @@ $("#modeSwitchBtn").onclick = async () => {
   if (!S.config) { const c = await run({ cmd: "get_config" }); if (c) S.config = c.config; }
   if (!S.regions.length) { const r = await run({ cmd: "regions" }); if (r) { S.regions = r.regions; S.presets = r.presets; } }
   const m = S.config ? S.config.mesh : {};
-  let regionSel = null;
+  let regionSel = null, adminSel = null, adminKey = null;
   const body = [];
   if (toMesh) {
     body.push(bullets([
-      "Bluetooth and Wi-Fi observation pauses. Sightings still open are saved first.",
-      "The Edge joins the LoRa mesh as " + (m.long_name || "Sotreus Edge") + " (" + (m.node_id || "") + ") and relays packets for other nodes.",
-      "Switching back later takes a moment and needs no restart.",
+      "Sightings still open are saved, then the Edge restarts in Mesh mode (about 15 seconds). Bluetooth and Wi-Fi observation stays off until you switch back.",
+      "The Edge joins the LoRa mesh as " + (m.long_name || "Sotreus Edge") + " (" + (m.node_id || "") + ").",
+      "This page logs out during the restart. Log in again afterwards.",
     ]));
+
     if (!m.region || m.region === "UNSET") {
       body.push(el("label", "f", "LoRa region (required)"));
       regionSel = el("select");
@@ -666,10 +742,21 @@ $("#modeSwitchBtn").onclick = async () => {
     } else {
       body.push(para("It transmits on " + m.region + " with the " + m.preset + " preset."));
     }
+    const adm = m.admin || { enabled: true, mode: "open", keys: [] };
+    body.push(el("label", "f", "Remote admin over the mesh"));
+    adminSel = el("select");
+    [["open", "Any node (default)"], ["keys", "Only my admin key"], ["off", "Off"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; adminSel.append(o); });
+    adminSel.value = !adm.enabled ? "off" : adm.mode;
+    adminKey = el("input", "mono"); adminKey.placeholder = "Admin node's public key (base64)"; adminKey.value = (adm.keys || [])[0] || ""; adminKey.style.marginTop = "6px";
+    const warn = el("p", "cap stale", "");
+    const sync = () => { warn.textContent = adminSel.value === "open" ? "Open means any node in radio range can change this Edge's mesh settings, read its configuration and restart it. Add an admin key to limit it to your own node." : adminSel.value === "keys" ? "Only messages encrypted by the node holding this key are accepted." : "Remote admin and remote hardware are refused."; adminKey.classList.toggle("hidden", adminSel.value !== "keys"); };
+    adminSel.onchange = sync; sync();
+    body.push(adminSel, adminKey, warn);
   } else {
     body.push(bullets([
-      "The LoRa mesh stops. Messages still waiting to be sent are dropped.",
+      "The Edge saves its node list and restarts in Awareness mode (about 15 seconds). Messages still waiting to be sent are dropped.",
       "Bluetooth and Wi-Fi observation resumes and new records are written again.",
+      "This page logs out during the restart. Log in again afterwards.",
     ]));
   }
   const ok = await ask(toMesh ? "Switch to Mesh?" : "Switch to Awareness?", body, toMesh ? "Switch to Mesh" : "Switch to Awareness");
@@ -679,8 +766,18 @@ $("#modeSwitchBtn").onclick = async () => {
     if (!regionSel.value) { toast("Pick a LoRa region first"); return; }
     config.mesh = { region: regionSel.value };
   }
-  const j = await run({ cmd: "set_config", config }, toMesh ? "Switched to Mesh" : "Switched to Awareness");
-  if (j) { S.config = j.config; refreshStatus(); }
+  if (adminSel) {
+    config.mesh = config.mesh || {};
+    const v = adminSel.value, key = adminKey.value.trim();
+    if (v === "keys" && !key) { toast("Enter the admin node's public key, or choose another option"); return; }
+    config.mesh.admin = v === "off" ? { enabled: false } : v === "keys" ? { enabled: true, mode: "keys", keys: [key] } : { enabled: true, mode: "open" };
+  }
+  const j = await run({ cmd: "set_config", config }, "Saved. The Edge is restarting.");
+  if (j) {
+    S.config = j.config;
+    $("#modeName").textContent = "Restarting…";
+    setTimeout(() => { lock(); $("#loginErr").textContent = "The Edge restarted in " + (toMesh ? "Mesh" : "Awareness") + " mode. Log in again."; }, 15000);
+  }
 };
 $("#pairBtn").onclick = () => run({ cmd: "pairing_open", seconds: 120 }, "Pairing open for 2 minutes. The code appears on the Edge's display.");
 
@@ -807,9 +904,26 @@ function precText(bits) {
   return "within about " + (km >= 1 ? km.toFixed(1) + " km" : Math.round(km * 1000) + " m");
 }
 const TX_STATUS = { queued: "waiting to send", sent: "sent", relayed: "relayed by a neighbour", delivered: "delivered", failed: "not delivered", no_ack: "no acknowledgement", no_relay_heard: "no relay heard" };
+function renderTak(list) {
+  $("#takList").replaceChildren(...(list.length ? list.slice().sort((a, b) => a.ago_s - b.ago_s).map((t) => {
+    const li = el("li", "row"), g = el("div", "grow");
+    const p = t.reported_position;
+    const bits = [t.team, t.role, p ? p.lat.toFixed(5) + ", " + p.lon.toFixed(5) : null, t.battery ? t.battery + "% battery" : null,
+      ago(t.ago_s * 1000), "via " + nodeName(t.node), t.compressed ? "compressed, details not readable" : null].filter(Boolean);
+    g.append(el("div", "t", t.callsign || t.uid || "TAK user"), el("div", "s", bits.join(" · ")));
+    li.append(g); return li;
+  }) : [el("li", "cap", "No ATAK users heard yet.")]));
+}
+$("#takSend").onclick = async () => {
+  const text = $("#takText").value.trim(); if (!text) return;
+  if (await run({ cmd: "mesh_tak_chat", text, channel: +$("#msgCh").value }, "TAK chat sent")) { $("#takText").value = ""; refreshMesh(); }
+};
+$("#takPos").onclick = () => run({ cmd: "mesh_tak_position", channel: +$("#msgCh").value }, "TAK position sent");
 async function refreshMesh() {
-  const [n, m, w, st] = await Promise.all([run({ cmd: "mesh_nodes" }), run({ cmd: "mesh_messages" }), run({ cmd: "mesh_waypoints" }), run({ cmd: "mesh_status" })]);
+  Live.mark("mesh");
+  const [n, m, w, st, tk] = await Promise.all([run({ cmd: "mesh_nodes" }), run({ cmd: "mesh_messages" }), run({ cmd: "mesh_waypoints" }), run({ cmd: "mesh_status" }), run({ cmd: "mesh_tak" })]);
   if (n) { S.nodes = n.nodes; renderNodes(); }
+  if (tk) renderTak(tk.tak);
   if (m) renderMsgs(m.messages);
   if (w) renderWaypoints(w.waypoints);
   if (st) renderMeshSelf(st.mesh);
@@ -981,6 +1095,12 @@ function renderMeshSelf(m) {
   rows.push(["Received / private / not decoded", (c.rx || 0) + " / " + (c.rx_pki || 0) + " / " + (c.rx_bad || 0)]);
   rows.push(["Sent / relayed / dropped", (c.tx || 0) + " / " + (c.relayed || 0) + " / " + (c.tx_dropped || 0)]);
   if (m.paxcounter) rows.push(["Paxcounter (sent as counts only)", m.paxcounter.ble + " Bluetooth · " + m.paxcounter.wifi + " Wi-Fi"]);
+  if (m.admin) rows.push(["Remote admin", !m.admin.enabled ? "off" : (m.admin.mode === "keys" ? m.admin.keys + " admin key(s) only" : "open to any node") + " · " + m.admin.requests + " requests, " + m.admin.refused + " refused"]);
+  const sv = m.store_forward_server;
+  if (sv && sv.enabled) rows.push(["Store and forward server", sv.stored + " of " + sv.capacity + " kept" + (sv.sending_to ? " · sending to " + nodeName(sv.sending_to) : "")]);
+  const mq = m.mqtt;
+  if (mq && mq.state !== "off") rows.push(["MQTT", mq.state + (mq.broker ? " · " + mq.broker + (mq.tls ? " (TLS)" : "") : "") + " · " + mq.uplinked + " up, " + mq.downlinked + " down" + (mq.last_error && mq.state !== "connected" ? " · " + mq.last_error : "")]);
+  if (m.audio_frames_heard) rows.push(["Voice frames heard", m.audio_frames_heard + " (no speaker fitted)"]);
   kv("#meshSelfKv", rows);
   const sf = m.store_forward_routers || 0;
   $("#sfNote").textContent = sf ? sf + " store & forward router" + (sf === 1 ? "" : "s") + " heard. They keep channel messages for nodes that were away." : "No store & forward router heard yet.";
@@ -1052,8 +1172,11 @@ function chanRow(c, i) {
   [0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32].forEach((b) => { const o = el("option", "", b === 0 ? "Position: not sent" : "Position: " + precText(b)); o.value = b; p.append(o); });
   p.value = String(c.position_precision ?? 32);
   if (![...p.options].some((o) => o.value === p.value)) { const o = el("option", "", "Position: " + precText(+p.value)); o.value = p.value; p.append(o); p.value = String(c.position_precision); }
+  const q = el("select", "cmqtt"); q.style.marginTop = "6px"; q.setAttribute("aria-label", "Channel " + i + " MQTT");
+  [["none", "MQTT: off"], ["up", "MQTT: uplink"], ["down", "MQTT: downlink"], ["both", "MQTT: both ways"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; q.append(o); });
+  q.value = c.uplink && c.downlink ? "both" : c.uplink ? "up" : c.downlink ? "down" : "none";
   const r = el("button", "btn small danger", "Remove"); r.disabled = i === 0; r.style.marginTop = "6px"; r.onclick = () => d.remove();
-  d.append(n, k, p, r); return d;
+  d.append(n, k, p, q, r); return d;
 }
 function posNote() {
   const v = S.posMode;
@@ -1061,6 +1184,79 @@ function posNote() {
   ["#mPosLat", "#mPosLon", "#mPosAlt"].forEach((x) => { $(x).disabled = v !== "fixed"; });
 }
 $$("#mPosMode button").forEach((b) => b.onclick = () => { S.posMode = b.dataset.v; $$("#mPosMode button").forEach((x) => x.setAttribute("aria-checked", x === b)); posNote(); });
+const PROTECTED_PINS = [0, 1, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 26, 27, 28, 29, 30, 31, 32, 35, 36, 37, 43, 44];
+function rhwRow(p) {
+  const d = el("div", "fields"); d.style.alignItems = "center";
+  const g = el("input", "rgpio"); g.type = "number"; g.min = 2; g.max = 48; g.value = p.gpio ?? ""; g.placeholder = "GPIO"; g.style.marginTop = "6px"; g.setAttribute("aria-label", "GPIO number");
+  const n = el("input", "rname"); n.maxLength = 15; n.value = p.name || ""; n.placeholder = "name"; n.style.marginTop = "6px"; n.setAttribute("aria-label", "Pin name");
+  const t = el("select", "rtype"); t.style.marginTop = "6px"; t.setAttribute("aria-label", "Pin use");
+  [["read", "Read only"], ["write", "Read and write"]].forEach(([v, x]) => { const o = el("option", "", x); o.value = v; t.append(o); });
+  t.value = p.type || "read";
+  const r = el("button", "btn small danger", "Remove"); r.style.marginTop = "6px"; r.onclick = () => d.remove();
+  d.append(g, n, t, r); return d;
+}
+$("#rhwAdd").onclick = () => { if ($("#rhwRows").children.length < 8) $("#rhwRows").append(rhwRow({})); else toast("At most 8 pins"); };
+function segPick(id, v) { $$("#" + id + " button").forEach((b) => b.setAttribute("aria-checked", b.dataset.v === v)); }
+function segValue(id) { const b = $$("#" + id + " button").find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; }
+["mAdminMode"].forEach((id) => $$("#" + id + " button").forEach((b) => b.onclick = () => { segPick(id, b.dataset.v); adminWarn(); }));
+function adminWarn() { $("#adminWarn").classList.toggle("hidden", !($("#mAdmin").checked && segValue("mAdminMode") === "open")); }
+$("#mAdmin").onchange = adminWarn;
+function fillModules(m) {
+  const a = m.admin || {};
+  $("#mAdmin").checked = !!a.enabled; segPick("mAdminMode", a.mode || "open"); $("#mAdminKeys").value = (a.keys || []).join("\n"); $("#mAdminChan").checked = !!a.admin_channel;
+  adminWarn();
+  const pick = $("#mAdminPick");
+  const none = el("option", "", "Choose a node with a key"); none.value = "";
+  pick.replaceChildren(none, ...S.nodes.filter((n) => n.public_key).map((n) => { const o = el("option", "", (n.long_name || n.id) + " (" + n.id + ")"); o.value = n.public_key; return o; }));
+  pick.onchange = () => { if (!pick.value) return; const ks = $("#mAdminKeys").value.split("\n").map((x) => x.trim()).filter(Boolean); if (!ks.includes(pick.value)) ks.push(pick.value); $("#mAdminKeys").value = ks.slice(0, 3).join("\n"); pick.value = ""; };
+  const rh = m.remote_hardware || {};
+  $("#mRhw").checked = !!rh.enabled; $("#mRhwAny").checked = !!rh.allow_undefined_pins;
+  $("#rhwRows").replaceChildren(...(rh.pins || []).map(rhwRow));
+  const sf = m.store_forward || {};
+  $("#mSfs").checked = !!sf.server; $("#mSfsHb").checked = sf.heartbeat !== false; $("#mSfsMax").value = sf.return_max || 25; $("#mSfsWin").value = sf.return_window_min || 240;
+  const ss = S.status && S.status.mesh && S.status.mesh.store_forward_server;
+  $("#mSfsNote").textContent = ss && ss.storage ? ss.stored + " of " + ss.capacity + " messages kept in flash." : "";
+  const q = m.mqtt || {};
+  $("#mMqtt").checked = !!q.enabled; $("#mMqttAddr").value = q.address || ""; $("#mMqttRoot").value = q.root || ""; $("#mMqttUser").value = q.username || "";
+  $("#mMqttPass").value = ""; $("#mMqttPass").placeholder = q.password_set ? "unchanged" : "none";
+  $("#mMqttTls").checked = !!q.tls; $("#mMqttEnc").checked = q.encryption !== false; $("#mMqttJson").checked = !!q.json;
+  const mp = q.map || {};
+  $("#mMqttMap").checked = !!mp.enabled; $("#mMqttMapLoc").checked = !!mp.location; $("#mMqttMapInt").value = mp.interval_s || 3600;
+  const prec = $("#mMqttMapPrec");
+  if (!prec.options.length) [10, 11, 12, 13, 14, 15, 16].forEach((b) => { const o = el("option", "", precText(b)); o.value = b; prec.append(o); });
+  prec.value = String(mp.precision || 14);
+  const tk = m.tak || {};
+  const TEAMS = ["default", "White", "Yellow", "Orange", "Magenta", "Red", "Maroon", "Purple", "Dark Blue", "Blue", "Cyan", "Teal", "Green", "Dark Green", "Brown"];
+  const ROLES = ["default", "Team Member", "Team Lead", "HQ", "Sniper", "Medic", "Forward Observer", "RTO", "K9"];
+  const fillSel = (sel, list, dflt) => { if (!sel.options.length) list.forEach((v) => { const o = el("option", "", v === "default" ? dflt : v); o.value = v; sel.append(o); }); };
+  fillSel($("#mTakTeam"), TEAMS, "Default (Cyan)"); fillSel($("#mTakRole"), ROLES, "Default (Team Member)");
+  $("#mTakTeam").value = tk.team || "default"; $("#mTakRole").value = tk.role || "default";
+  const au = m.audio || {};
+  const rate = $("#mAudioRate");
+  if (!rate.options.length) ["default", "3200", "2400", "1600", "1400", "1300", "1200", "700", "700B", "700C", "450"].forEach((v) => { const o = el("option", "", v === "default" ? "Default" : v + " bit/s"); o.value = v; rate.append(o); });
+  $("#mAudio").checked = !!au.enabled; rate.value = au.bitrate || "default";
+  [["mAudioPtt", "ptt_gpio"], ["mI2sWs", "i2s_ws"], ["mI2sSd", "i2s_sd"], ["mI2sDin", "i2s_din"], ["mI2sSck", "i2s_sck"]].forEach(([id, k]) => { $("#" + id).value = au[k] ?? -1; });
+}
+function moduleSettings() {
+  const keys = $("#mAdminKeys").value.split("\n").map((x) => x.trim()).filter(Boolean);
+  if (keys.length > 3) throw new Error("At most 3 admin keys");
+  const mode = segValue("mAdminMode") || "open";
+  if (mode === "keys" && !keys.length && !$("#mAdminChan").checked) throw new Error("Add an admin key before choosing Only admin keys");
+  const pins = [...$("#rhwRows").children].map((d) => ({ gpio: +d.querySelector(".rgpio").value, name: d.querySelector(".rname").value.trim(), type: d.querySelector(".rtype").value })).filter((p) => p.gpio > 0 || p.name);
+  for (const p of pins) if (!(p.gpio >= 0 && p.gpio <= 48) || PROTECTED_PINS.includes(p.gpio)) throw new Error("GPIO " + p.gpio + " is used by the board itself");
+  const q = { enabled: $("#mMqtt").checked, address: $("#mMqttAddr").value.trim(), root: $("#mMqttRoot").value.trim(), username: $("#mMqttUser").value.trim(),
+    tls: $("#mMqttTls").checked, encryption: $("#mMqttEnc").checked, json: $("#mMqttJson").checked,
+    map: { enabled: $("#mMqttMap").checked, location: $("#mMqttMapLoc").checked, interval_s: +$("#mMqttMapInt").value || 3600, precision: +$("#mMqttMapPrec").value } };
+  if ($("#mMqttPass").value) q.password = $("#mMqttPass").value;
+  return {
+    admin: { enabled: $("#mAdmin").checked, mode, keys, admin_channel: $("#mAdminChan").checked },
+    remote_hardware: { enabled: $("#mRhw").checked, allow_undefined_pins: $("#mRhwAny").checked, pins },
+    store_forward: { server: $("#mSfs").checked, heartbeat: $("#mSfsHb").checked, return_max: +$("#mSfsMax").value || 25, return_window_min: +$("#mSfsWin").value || 240 },
+    mqtt: q,
+    tak: { team: $("#mTakTeam").value, role: $("#mTakRole").value },
+    audio: { enabled: $("#mAudio").checked, bitrate: $("#mAudioRate").value, ptt_gpio: +$("#mAudioPtt").value, i2s_ws: +$("#mI2sWs").value, i2s_sd: +$("#mI2sSd").value, i2s_din: +$("#mI2sDin").value, i2s_sck: +$("#mI2sSck").value },
+  };
+}
 function renderIgnore(list) {
   $("#ignoreList").replaceChildren(...(list.length ? list.map((id) => {
     const li = el("li", "row"), g = el("div", "grow"), b = el("button", "btn small", "Stop ignoring");
@@ -1098,6 +1294,7 @@ async function fillSettings() {
   $("#mTx").checked = lo.tx_enabled !== false; $("#mRxBoost").checked = !!lo.rx_boosted; $("#mDuty").checked = !!lo.override_duty_cycle;
   $("#mIgnMqtt").checked = !!lo.ignore_mqtt; $("#mOkMqtt").checked = !!lo.ok_to_mqtt; $("#mLicensed").checked = !!m.licensed;
   renderIgnore(m.ignore || []);
+  fillModules(m);
   $("#nodeIdNote").textContent = "Mesh node ID " + m.node_id + ". It is random and not derived from any hardware address.";
   if (S.info) kv("#aboutKv", [["Product", "Sotreus Edge · sotreus.com"], ["Made by", (S.info.vendor || "NetSepio LLC") + " · netsepio.com"], ["Firmware", S.info.fw + " (ESP-IDF " + S.info.idf + ")"], ["Hardware", S.info.hw], ["Device", S.info.suffix + " · boot " + S.info.boot]]);
   CtxSettings.fill();
@@ -1116,7 +1313,7 @@ function meshSettings() {
   if (canned.some((t) => new TextEncoder().encode(t).length > 39)) throw new Error("Quick messages are at most 39 bytes each");
   return { region: $("#mRegion").value, preset: $("#mPreset").value, long_name: $("#mLong").value.trim(), short_name: $("#mShort").value.trim(), hop_limit: num("#mHops"), tx_power: num("#mPower"),
     rebroadcast: $("#mRebroadcast").value, role: $("#mRole").value, nodeinfo_interval_s: num("#mNodeInfo"), licensed: $("#mLicensed").checked,
-    channels: [...$("#chanRows").children].map((d) => ({ name: d.querySelector(".cname").value.trim(), psk: d.querySelector(".ckey").value.trim() || "default", position_precision: +d.querySelector(".cprec").value })),
+    channels: [...$("#chanRows").children].map((d) => { const q = d.querySelector(".cmqtt").value; return { name: d.querySelector(".cname").value.trim(), psk: d.querySelector(".ckey").value.trim() || "default", position_precision: +d.querySelector(".cprec").value, uplink: q === "up" || q === "both", downlink: q === "down" || q === "both" }; }),
     position: pos, telemetry_interval_s: num("#mTelInt"),
     neighbor_info: { enabled: $("#mNb").checked, interval_s: num("#mNbInt") }, range_test_interval_s: num("#mRange"),
     paxcounter: { enabled: $("#mPax").checked, interval_s: num("#mPaxInt") },
@@ -1132,7 +1329,11 @@ $("#saveSettings").onclick = async () => {
   const c = { display: { timeout_s: +$("#sDisp").value } };
   if (!mesh) c.awareness = { ble: $("#sBle").checked, ble_active: $("#sBleActive").checked, wifi_aps: $("#sAps").checked, wifi_probes: $("#sProbes").checked, probe_names: $("#sProbeNames").checked, rssi_floor: +$("#sFloor").value, close_after_s: +$("#sClose").value, max_window_s: +$("#sWin").value };
   else {
-    try { c.mesh = meshSettings(); } catch (e) { toast(e.message); return; }
+    try { c.mesh = Object.assign(meshSettings(), moduleSettings()); } catch (e) { toast(e.message); return; }
+    if (c.mesh.admin.enabled && c.mesh.admin.mode === "open" && !(S.config.mesh.admin && S.config.mesh.admin.enabled && S.config.mesh.admin.mode === "open") &&
+        !await ask("Open remote admin to any node?", [para("Any node in radio range will be able to change this Edge's mesh settings, read its configuration and restart it. Wi-Fi, security, MQTT, channel and remote hardware settings still need an admin key.")], "Open it", true)) return;
+    if (c.mesh.remote_hardware.enabled && c.mesh.admin.mode === "open" && !(S.config.mesh.remote_hardware || {}).enabled &&
+        !await ask("Allow remote GPIO from any node?", [para("With remote admin open, any node in range can read and set the listed pins. Make sure nothing harmful is wired to them.")], "Allow", true)) return;
     const was = S.config.mesh;
     if (c.mesh.licensed && !was.licensed && !await ask("Turn on licensed mode?", [para("Every channel is sent without encryption, and private direct messages stop. Use it only with an amateur radio licence, with your call sign as the long name.")], "Turn on", true)) return;
     if (c.mesh.lora.override_duty_cycle && !(was.lora || {}).override_duty_cycle && !await ask("Ignore the duty-cycle limit?", [para("The region's limit on transmit time exists in law in many places. Turn this on only where your licence allows it.")], "Ignore limit", true)) return;
@@ -1710,22 +1911,75 @@ $("#ctxSourcesBtn").onclick = () => { showTab("settings"); setTimeout(() => $("#
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && Ctx.isOpen) Ctx.tick(false); });
 setInterval(() => { if (Ctx.isOpen && Ctx.mapReady) Ctx.drawMap(); }, 30000); /* satellites move */
 
+/* ---------------------------------------------------------------- auto refresh
+   Live events keep things current while the WebSocket works; this fills the gaps (a silent or
+   dropped socket, a hidden tab coming back) by polling the visible section, and says when data
+   is old instead of showing it as current. Settings forms are never refreshed under the user. */
+const Live = {
+  every: { mesh: 20000, wifi: 30000, obs: 20000 },
+  last: {},
+  busy: false,
+  tab() { const t = document.querySelector("section.tab.active"); return t ? t.id.slice(4) : ""; },
+  mark(name) { this.last[name] = Date.now(); },
+  due(name) { return Date.now() - (this.last[name] || 0) >= this.every[name]; },
+  wsAlive() { return S.ws && S.ws.readyState === 1 && Date.now() - (S.lastWsMsg || 0) < 25000; },
+  freshness() {
+    const line = $("#updatedLine"); if (!line) return;
+    if (!S.lastStatusAt) { line.textContent = ""; return; }
+    const age = Date.now() - S.lastStatusAt;
+    line.className = "cap" + (age > 45000 ? " stale" : "");
+    line.textContent = age > 45000 ? "Stale: last update from the Edge " + ago(age) + ". It may be restarting or out of reach." : "Updated " + (age < 5000 ? "just now" : ago(age));
+  },
+  async pollRecords() {
+    const head = S.status && S.status.log ? S.status.log.head : 0;
+    const have = obs.length ? obs[0].seq : head - 1;
+    if (head > have + 1) { try { (await fetchRecords(have + 1, 60)).forEach(addObs); } catch (e) { /* next round */ } }
+  },
+  async refreshTab(force) {
+    const tab = this.tab();
+    if (tab === "mesh" && (force || this.due("mesh"))) await refreshMesh();
+    else if (tab === "wifi" && (force || this.due("wifi"))) { this.mark("wifi"); await refreshWifi("list-only"); }
+    else if (tab === "obs" && (force || (this.due("obs") && !this.wsAlive()))) { this.mark("obs"); await this.pollRecords(); }
+  },
+  async tick() {
+    if (!token || document.visibilityState !== "visible" || Live.busy) return;
+    Live.busy = true;
+    try {
+      /* a socket that is open but has gone quiet is reopened */
+      if (S.ws && S.ws.readyState === 1 && Date.now() - (S.lastWsMsg || 0) > 35000) S.ws.close();
+      if (Date.now() - (S.lastStatusAt || 0) > 15000) await refreshStatus();
+      await Live.refreshTab(false);
+    } finally {
+      Live.busy = false;
+      Live.freshness();
+    }
+  },
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !token) return;
+  refreshStatus();
+  Live.refreshTab(true);
+  if (!S.ws) connectWs();
+});
+
 /* ---------------------------------------------------------------- live events */
 function setLive(state) { const p = $("#liveChip"); p.className = "chip " + (state === "live" ? "sensed" : "live"); p.lastChild.textContent = state; }
 function connectWs() {
   if (!token) return;
   S.ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?token=" + encodeURIComponent(token));
   S.ws.binaryType = "arraybuffer";
-  S.ws.onopen = () => { S.wsRetry = 0; setLive("live"); };
+  S.ws.onopen = () => { S.wsRetry = 0; S.lastWsMsg = Date.now(); setLive("live"); Live.refreshTab(true); };
   S.ws.onmessage = (m) => {
+    S.lastWsMsg = Date.now();
     if (m.data instanceof ArrayBuffer) { decodeRecords(m.data).forEach(addObs); return; } /* a new record, raw */
     m.data.split("\n").filter(Boolean).forEach((line) => {
       let e; try { e = JSON.parse(line); } catch (x) { return; }
       if (e.ev === "status") renderStatus(e.status);
       else if (e.ev === "obs") addObs(e.rec);
       else if (e.ev === "mode") refreshStatus();
-      else if (e.ev === "mesh_rx" || e.ev === "mesh_tx" || e.ev === "mesh_node" || e.ev === "mesh_waypoint") { if ($("#tab-mesh").classList.contains("active")) refreshMesh(); if (e.ev === "mesh_rx") toast("Mesh message from " + nodeName(e.msg.from)); }
+      else if (e.ev === "mesh_rx" || e.ev === "mesh_tx" || e.ev === "mesh_node" || e.ev === "mesh_waypoint" || e.ev === "mesh_tak") { if ($("#tab-mesh").classList.contains("active")) refreshMesh(); if (e.ev === "mesh_rx") toast("Mesh message from " + nodeName(e.msg.from)); }
       else if (e.ev === "mesh_traceroute") { onTraceroute(e); toast("Route check to " + nodeName(e.to) + " came back"); }
+      else if (e.ev === "mesh_admin" || e.ev === "mesh_rhw") toast((e.ev === "mesh_admin" ? "Remote admin from " : "Remote GPIO from ") + nodeName(e.from) + ": " + e.outcome);
     });
   };
   S.ws.onclose = () => { setLive("reconnecting"); S.ws = null; if (token) setTimeout(connectWs, Math.min(10000, 1000 * ++S.wsRetry)); };
@@ -1740,7 +1994,7 @@ async function start() {
   S.ctx = ctxMerge(x ? x.ctx : null);
   await refreshStatus();
   connectWs();
-  setInterval(() => { if (!S.ws) refreshStatus(); }, 15000);
+  setInterval(() => Live.tick(), 5000);
 }
 if (token) start();
 </script>

@@ -12,14 +12,20 @@ It runs in one of two modes, chosen from the app or the setup page:
 * **Awareness.** Continuous BLE advertising capture and 2.4 GHz Wi-Fi
   management-frame capture (access points, probe requests, Remote ID beacon
   elements). Results are folded into per-device sightings and written to a
-  3.8 MB on-device record log.
+  3.4 MB on-device record log.
 * **Mesh.** A Meshtastic-compatible LoRa node, controlled from the Sotreus
-  app or the setup page: channel and private (PKI) direct messages, replies
-  and reactions, roles and relaying, position, telemetry, traceroute,
-  waypoints, neighbour info, store & forward, range test, paxcounter,
-  detection sensor, serial bridge, notifications and quick messages.
-  Awareness pauses while mesh mode runs, and records already stored are kept.
-  Switching modes is instant and needs no reboot or reflash.
+  app, the setup page, or a Meshtastic app over the air (remote admin):
+  channel and private (PKI) direct messages, replies and reactions, roles and
+  relaying, position, telemetry, traceroute, waypoints, neighbour info,
+  store & forward (client and flash-backed server), range test, paxcounter,
+  detection sensor, serial bridge, notifications, quick messages, remote
+  admin, remote hardware (GPIO), MQTT with TLS, and ATAK (TAK positions and
+  GeoChat from the Meshtastic ATAK plugin, and the `TAK_TRACKER` role).
+
+Each mode boots on its own. Switching modes saves the setting and restarts
+the Edge (about 15 seconds): Mesh mode never loads the sighting pipeline,
+and Awareness mode puts the LoRa radio to sleep and frees the mesh task.
+Records already stored are kept.
 
 The Wi-Fi link is set separately. In `auto` the Edge joins a known network if
 one is in range, and otherwise runs its own access point
@@ -55,8 +61,9 @@ tools/context-relay Cloudflare Worker the browser can use for three Context feed
 | Partition | Size | Holds |
 |---|---|---|
 | `nvs` | 24 KB | settings, Wi-Fi networks, bonds, PIN, mesh key pair |
-| `ota_0`, `ota_1` | 2 MB each | firmware (about 1.5 MB now) |
-| `obslog` | 3.7 MB | about 15,100 records of 256 bytes |
+| `ota_0`, `ota_1` | 2 MB each | firmware (about 1.7 MB now) |
+| `obslog` | 3.4 MB | about 14,000 records of 256 bytes |
+| `sfdb` | 256 KB | store & forward server history, about 1,000 messages |
 | `meshdb` | 64 KB | nodes, messages and waypoints (two 32 KB copies) |
 | `coredump` | 128 KB | the last crash, for `idf.py coredump-info` |
 
@@ -102,8 +109,11 @@ make -C tests/host test
 
 ## First use
 
-1. **Power on.** The display shows the status screen. Short-press **PRG**
-   to cycle through STATUS → LINK → ACCESS → LORA.
+1. **Power on.** The display shows the status screen, with the mode
+   (`AWARE` or `MESH`) in its header. Short-press **PRG** to cycle through
+   STATUS → LINK → ACCESS in Awareness mode, or STATUS → LORA → LINK →
+   ACCESS in Mesh mode. While the Edge restarts into another mode, the
+   display shows "Switching to MESH" (or AWARE).
 2. **Pair a phone over Bluetooth.** Pairing is open until the first phone
    bonds. Later, hold **PRG** for 3 s to open it for 2 minutes. The 6-digit
    code appears on the display.
@@ -135,8 +145,15 @@ The Edge serves its own web app in the Sotreus "Night Instrument" theme,
 with Geist and Instrument Serif fonts bundled on the device. Tabs follow the
 mode:
 
+- Every section keeps itself current: live events arrive over a WebSocket,
+  and while a section is visible it also polls the Edge (status every 15 s
+  without live events, the Mesh tab every 20 s, Wi-Fi every 30 s, new records
+  every 20 s). A silent WebSocket is reopened, a tab coming back into view
+  refreshes at once, and the Overview says "Stale" when the Edge has not
+  answered for 45 s. Settings forms are not refreshed under you.
 - **Overview** shows the current mode. Switching modes always asks for
-  confirmation, and asks for the LoRa region first if none is set.
+  confirmation, asks for the LoRa region first if none is set, and, before
+  the restart into Mesh, asks who may administer the Edge over the air.
 - **Observations** appears in Awareness mode only; **Mesh** in Mesh mode
   only. Settings show only the current mode's options.
 - **Context** appears only when the Edge has joined a network in station
@@ -164,11 +181,18 @@ mode:
 ## Privacy choices
 
 * Observations stay on the Edge until a bonded phone or an authenticated
-  setup-page session reads them. The Edge uses no cloud service. Its only
-  outbound connections are made while it has joined a network:
+  setup-page session reads them. Outbound connections, only while the Edge
+  has joined a network:
   * network time (SNTP to `pool.ntp.org`)
+  * in Mesh mode, the MQTT broker you configure (off by default)
 
-  The setup page's Context feeds are fetched by the browser, not the Edge.
+  The setup page's Context feeds are fetched by the browser, not the Edge, so
+  Awareness scanning is never slowed by them.
+* Remote admin is open to any node by default (the owner's choice). The
+  setup page shows a warning until an admin key is set. Even when open, the
+  Wi-Fi, security, MQTT, channel and remote hardware settings and factory
+  resets need an admin key, the private key and Wi-Fi password are never
+  sent, and every change made over the air is written to the record log.
 * The Edge does not broadcast stable hardware identifiers:
   * The Bluetooth address rotates (resolvable private address), and the name
     is advertised only while pairing is open.
@@ -194,10 +218,44 @@ region slots, presets, header, channel encryption and channel hash, and
 Meshtastic 2.5 public-key (PKI) direct messages. It exchanges messages with
 Meshtastic nodes on a matching channel, including the public default
 `LongFast`, and channel links (`meshtastic.org/e/#…`) can be shared both
-ways. Use it from the Sotreus app or the Mesh tab of the setup page; the
-Meshtastic phone app cannot connect. MQTT, remote admin, remote hardware,
-the store & forward server, audio and ATAK are left out on purpose.
-[docs/protocol.md](docs/protocol.md) section 7 lists exactly what is covered.
+ways. A Meshtastic app on another node can administer it remotely (with
+Meshtastic's session keys), and it can act as an MQTT gateway and a store &
+forward server. [docs/protocol.md](docs/protocol.md) section 7 lists exactly
+what is covered.
+
+Not included:
+
+* **The Meshtastic phone API** (Bluetooth / TCP `ToRadio`/`FromRadio`), so the
+  Meshtastic app cannot connect to the Edge directly. The Sotreus app and the
+  setup page are its clients. Remote admin from a Meshtastic app on another
+  node works.
+* **Audio.** The settings exist (and can be set remotely), but voice is
+  neither sent nor played: the Heltec V3 has no microphone, speaker or I2S
+  codec, and the codec2 library is not built in yet.
+
+### ATAK
+
+ATAK (Android Team Awareness Kit) is a map app used by emergency services,
+search-and-rescue teams and the military. Meshtastic's ATAK plugin sends team
+positions and GeoChat over LoRa. The Edge works with it the way Meshtastic
+firmware does:
+
+* It reads TAK packets from both plugin versions (v1 `TAKPacket` on port 72,
+  v2 `TAKPacketV2` on port 78) and lists ATAK users with callsign, team,
+  role, reported position and battery; GeoChat appears in Messages as
+  `[TAK]`. Packets the plugin compressed (v1 unishox2 strings, v2 zstd) are
+  relayed unchanged; their positions are shown when readable (v1), their text
+  is not.
+* With the role `TAK_TRACKER` ("TAK position beacon") it reports its position
+  as an uncompressed TAK v2 position (flags byte `0xFF`), like Meshtastic,
+  with the team colour and role set under Settings › ATAK (Meshtastic
+  `TAKConfig`, also settable by remote admin).
+* From the setup page (and later the Sotreus app) it can send TAK GeoChat to
+  all chat rooms and its TAK position on demand.
+
+What the Edge cannot do is run ATAK itself: an ATAK phone still needs the
+Meshtastic Android app (phone API above) or, later, the Sotreus app to
+translate between ATAK and the mesh.
 
 Sotreus Edge is not affiliated with or endorsed by Meshtastic®, a registered
 trademark of Meshtastic LLC.
@@ -229,13 +287,21 @@ Verified on a board:
 * Awareness: BLE, access points, probe requests
 * Sighting records: written with uptime time, then wall time once the clock
   is set
-* Live switching awareness ↔ mesh, and the AP fallback with channel hopping
+* Switching awareness ↔ mesh restarts into the other mode (the sighting task
+  is absent in Mesh, the mesh task in Awareness), and the AP fallback with
+  channel hopping
 * Nearby Wi-Fi scan from the setup page: completes in about 12 s with
   20+ networks, in both modes
 * Captive-portal DNS answers (host-tested). The DNS responder starts on the
   access point.
-* Free heap in awareness mode with Wi-Fi joined: about 76 KB (low point about
-  54 KB). Mesh mode with its node, message and waypoint tables: about 60 KB.
+* Free heap with Wi-Fi joined: Awareness about 80 KB (low point about 65 KB).
+  Mesh with its tables, store & forward and an MQTT connection: about 58 KB.
+  During the TLS handshake to `mqtt.meshtastic.org:8883` the low point was
+  33 KB.
+* MQTT: connect, subscribe, uplink of the Edge's own packet (still encrypted)
+  and downlink of a broker message into the mesh, against a local test broker;
+  TLS connection to `mqtt.meshtastic.org:8883`.
+* Store & forward server: sent and downlinked channel text kept in flash.
 * Setup page served gzipped from the Edge. MapLibre (211 KB) loads in about
   2 s over Wi-Fi.
 * `sotreus-96ff.local` resolves; `_sotreus._tcp` is browsable.
@@ -258,10 +324,11 @@ Not yet verified:
   while a phone is connected to the access point
 * Anything that needs another Meshtastic node in range: receiving and
   decoding, PKI direct messages both ways, ACKs, traceroute replies, store &
-  forward, and a stock node listing the Edge. No LoRa traffic was in range
+  forward requests, remote admin and remote hardware from a Meshtastic app,
+  and a stock node listing the Edge. No LoRa traffic was in range
   during testing. The crypto and protobuf code passes known-answer tests on
-  the host (RFC 7748, FIPS-197, RFC 3610 vectors and Meshtastic channel
-  links).
+  the host (RFC 7748, FIPS-197, RFC 3610 vectors, Meshtastic channel
+  links, and AdminMessage / ServiceEnvelope / StoreAndForward round trips).
 * The Context relay on Cloudflare itself. Its code was run locally under
   Node against the live feeds.
 * OTA upload

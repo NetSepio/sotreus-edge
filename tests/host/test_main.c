@@ -10,6 +10,9 @@
 #include "edge_util.h"
 #include "mesh_pb.h"
 #include "mesh_radio.h"
+#include "mesh_admin.h"
+#include "mesh_pb_ext.h"
+#include "pb_wire.h"
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -364,6 +367,274 @@ static void test_pb_more(void)
     CHECK(bl > 0 && mt_sf_decode(b, bl, &sfo) && sfo.rr == MT_SF_CLIENT_HISTORY && sfo.has_history && sfo.window == 120);
 }
 
+/* Finds field `f` at the top level of a message; returns its sub-buffer or value. */
+static bool find_field(const uint8_t *b, size_t n, uint32_t f, pf_t *out)
+{
+    pr_t r;
+    pr_init(&r, b, n);
+    while (pr_next(&r, out) == 1) {
+        if (out->field == f) return true;
+    }
+    return false;
+}
+
+static void base_cfg(edge_config_t *c, edge_mesh_mod_t *m)
+{
+    memset(c, 0, sizeof(*c));
+    c->region = 10; /* IN */
+    c->preset = 0;  /* LONG_FAST */
+    c->hop_limit = 3;
+    c->n_channels = 1;
+    c->channels[0].psk[0] = 1;
+    c->channels[0].psk_len = 1;
+    c->channels[0].position_precision = 13;
+    c->nodeinfo_interval_s = 10800;
+    strcpy(c->long_name, "Edge");
+    strcpy(c->short_name, "ED");
+    c->mx.tx_enabled = true;
+    c->mx.n_canned = 2;
+    strcpy(c->mx.canned[0], "OK");
+    strcpy(c->mx.canned[1], "On my way");
+    memset(m, 0, sizeof(*m));
+    m->admin_enabled = true;
+    strcpy(m->mqtt_address, "mqtt.meshtastic.org");
+    strcpy(m->mqtt_password, "secret");
+}
+
+static void test_admin(void)
+{
+    edge_config_t c;
+    edge_mesh_mod_t m;
+    base_cfg(&c, &m);
+    uint8_t pk[8] = {1, 2, 3, 4, 5, 6, 7, 8}, pub[32];
+    memset(pub, 0xab, sizeof(pub));
+    adm_ctx_t x = {.my_node = 0x11223344, .public_key = pub, .fw_version = "2.5.0.5e0e", .passkey = pk};
+    adm_class_t cls;
+    adm_result_t res;
+    uint8_t req[64];
+    pf_t f, g, h;
+
+    /* get_config LORA_CONFIG (5): a read, needs no passkey */
+    size_t rl = mesh_admin_build_get_config(5, NULL, req, sizeof(req));
+    CHECK(mesh_admin_classify(req, rl, &cls) && cls.variant == 5 && cls.is_get && !cls.sensitive);
+    CHECK(mesh_admin_apply(req, rl, &x, &c, &m, &res) && res.reply_len > 0);
+    CHECK(find_field(res.reply, res.reply_len, 101, &f) && f.len == 8 && memcmp(f.data, pk, 8) == 0);
+    CHECK(find_field(res.reply, res.reply_len, 6, &f));                   /* get_config_response */
+    CHECK(find_field(f.data, f.len, 6, &g));                               /* Config.lora */
+    CHECK(find_field(g.data, g.len, 7, &h) && h.v == 10);                  /* region IN */
+    CHECK(find_field(g.data, g.len, 8, &h) && h.v == 3);                   /* hop limit */
+
+    /* get_module_config MQTT without admin-key rights: no password */
+    rl = mesh_admin_build_get_module(0, NULL, req, sizeof(req));
+    CHECK(mesh_admin_apply(req, rl, &x, &c, &m, &res) && find_field(res.reply, res.reply_len, 8, &f));
+    CHECK(find_field(f.data, f.len, 1, &g) && find_field(g.data, g.len, 2, &h) && h.len == 19);
+    CHECK(!find_field(g.data, g.len, 4, &h));
+    x.sensitive_ok = true;
+    CHECK(mesh_admin_apply(req, rl, &x, &c, &m, &res) && find_field(res.reply, res.reply_len, 8, &f));
+    CHECK(find_field(f.data, f.len, 1, &g) && find_field(g.data, g.len, 4, &h) && h.len == 6);
+    x.sensitive_ok = false;
+
+    /* get_channel 0 (sent as index + 1): no key unless sensitive_ok */
+    rl = mesh_admin_build_get_channel(0, req, sizeof(req));
+    CHECK(mesh_admin_apply(req, rl, &x, &c, &m, &res) && find_field(res.reply, res.reply_len, 2, &f));
+    CHECK(find_field(f.data, f.len, 3, &g) && g.v == 1);                   /* PRIMARY */
+    CHECK(find_field(f.data, f.len, 2, &g) && !find_field(g.data, g.len, 2, &h));
+
+    /* get canned messages */
+    pw_t w;
+    pw_init(&w, req, sizeof(req));
+    pw_u(&w, 10, 1);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && find_field(res.reply, res.reply_len, 11, &f));
+    CHECK(f.len == 12 && memcmp(f.data, "OK|On my way", 12) == 0);
+
+    /* set_config lora: hop 5, region EU_868 (3), with a passkey; classified as a non-sensitive write */
+    pw_init(&w, req, sizeof(req));
+    pw_mark_t a = pw_begin(&w, 34);
+    pw_mark_t l = pw_begin(&w, 6);
+    pw_bool(&w, 1, true);
+    pw_u(&w, 7, 3);
+    pw_u(&w, 8, 5);
+    pw_bool(&w, 9, true);
+    pw_end(&w, l);
+    pw_end(&w, a);
+    pw_bytes(&w, 101, pk, 8);
+    CHECK(mesh_admin_classify(req, w.len, &cls) && cls.variant == 34 && !cls.is_get && !cls.sensitive && cls.has_passkey);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && res.cfg_changed && c.region == 3 && c.hop_limit == 5);
+
+    /* set_config security is sensitive; listing a key switches to keys-only */
+    uint8_t key[32];
+    memset(key, 7, sizeof(key));
+    pw_init(&w, req, sizeof(req));
+    a = pw_begin(&w, 34);
+    l = pw_begin(&w, 8);
+    pw_bytes(&w, 3, key, 32);
+    pw_end(&w, l);
+    pw_end(&w, a);
+    CHECK(mesh_admin_classify(req, w.len, &cls) && cls.sensitive);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && res.mod_changed && m.n_admin_keys == 1 &&
+          m.admin_mode == EDGE_ADMIN_KEYS && m.admin_keys[0][5] == 7);
+
+    /* set_module_config MQTT is sensitive */
+    pw_init(&w, req, sizeof(req));
+    a = pw_begin(&w, 35);
+    l = pw_begin(&w, 1);
+    pw_bool(&w, 1, true);
+    pw_str(&w, 2, "broker.example:1884");
+    pw_bool(&w, 7, true);
+    pw_end(&w, l);
+    pw_end(&w, a);
+    CHECK(mesh_admin_classify(req, w.len, &cls) && cls.sensitive);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && m.mqtt_enabled && m.mqtt_tls &&
+          strcmp(m.mqtt_address, "broker.example:1884") == 0);
+
+    /* set_channel: add a secondary with downlink, then disable it */
+    pw_init(&w, req, sizeof(req));
+    a = pw_begin(&w, 33);
+    pw_u(&w, 1, 1);
+    l = pw_begin(&w, 2);
+    pw_bytes(&w, 2, key, 16);
+    pw_str(&w, 3, "Team");
+    pw_bool(&w, 6, true);
+    pw_end(&w, l);
+    pw_u(&w, 3, 2);
+    pw_end(&w, a);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && c.n_channels == 2 && strcmp(c.channels[1].name, "Team") == 0 &&
+          c.channels[1].psk_len == 16 && (m.ch_downlink & 2) && !(m.ch_uplink & 2));
+    pw_init(&w, req, sizeof(req));
+    a = pw_begin(&w, 33);
+    pw_u(&w, 1, 1);
+    pw_end(&w, a);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && c.n_channels == 1 && !(m.ch_downlink & 2));
+
+    /* canned messages, reboot, favourite */
+    pw_init(&w, req, sizeof(req));
+    pw_str(&w, 36, "A|B|C");
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && c.mx.n_canned == 3 && strcmp(c.mx.canned[2], "C") == 0);
+    pw_init(&w, req, sizeof(req));
+    pw_u(&w, 97, 5);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && res.reboot_s == 5);
+    pw_init(&w, req, sizeof(req));
+    pw_u(&w, 39, 0xdeadbeef);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && res.fav_set == 0xdeadbeef);
+
+    /* metadata */
+    pw_init(&w, req, sizeof(req));
+    pw_u(&w, 12, 1);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && find_field(res.reply, res.reply_len, 13, &f));
+    CHECK(find_field(f.data, f.len, 9, &g) && g.v == 43 && find_field(f.data, f.len, 11, &g) && g.v == 1);
+    CHECK(mesh_admin_baud_value(mesh_admin_baud_code(9600)) == 9600);
+}
+
+static void test_ext_pb(void)
+{
+    uint8_t payload[4] = {9, 8, 7, 6}, b[256];
+    mt_envelope_t e = {.has_packet = true}, eo;
+    e.packet = (mt_packet_t){.from = 0x11, .to = 0xffffffff, .id = 0x55667788, .channel = 8, .payload = payload,
+                             .payload_len = 4, .hop_limit = 3, .hop_start = 3, .rx_rssi = -101, .rx_snr = -7.5f, .via_mqtt = true};
+    strcpy(e.channel_id, "LongFast");
+    strcpy(e.gateway_id, "!11223344");
+    size_t n = mt_envelope_encode(&e, b, sizeof(b));
+    CHECK(n > 0 && mt_envelope_decode(b, n, &eo));
+    CHECK(eo.packet.from == 0x11 && eo.packet.to == 0xffffffff && eo.packet.id == 0x55667788 && eo.packet.channel == 8);
+    CHECK(!eo.packet.decoded && eo.packet.payload_len == 4 && memcmp(eo.packet.payload, payload, 4) == 0);
+    CHECK(eo.packet.rx_rssi == -101 && eo.packet.rx_snr == -7.5f && eo.packet.via_mqtt && eo.packet.hop_start == 3);
+    CHECK(strcmp(eo.channel_id, "LongFast") == 0 && strcmp(eo.gateway_id, "!11223344") == 0);
+
+    mt_hw_t h = {.type = MT_HW_READ_GPIOS_REPLY, .mask = 1ULL << 40 | 1 << 4, .value = 1ULL << 40}, ho;
+    n = mt_hw_encode(&h, b, sizeof(b));
+    CHECK(mt_hw_decode(b, n, &ho) && ho.type == 5 && ho.mask == h.mask && ho.value == h.value);
+
+    mt_sf_t sf;
+    n = mt_sf_encode_history(MT_SF_ROUTER_HISTORY, 7, 240 * 60000, 0, b, sizeof(b));
+    CHECK(mt_sf_decode(b, n, &sf) && sf.rr == MT_SF_ROUTER_HISTORY && sf.has_history && sf.history_messages == 7);
+    n = mt_sf_encode_text(MT_SF_ROUTER_TEXT_BROADCAST, (const uint8_t *)"hi", 2, b, sizeof(b));
+    CHECK(mt_sf_decode(b, n, &sf) && sf.rr == MT_SF_ROUTER_TEXT_BROADCAST && sf.text_len == 2);
+    n = mt_sf_encode_heartbeat(900, 0, b, sizeof(b));
+    CHECK(mt_sf_decode(b, n, &sf) && sf.rr == MT_SF_ROUTER_HEARTBEAT && sf.has_heartbeat && sf.hb_period == 900);
+    mt_sf_stats_t st = {.messages_saved = 3, .messages_max = 1008, .heartbeat = true};
+    n = mt_sf_encode_stats(&st, b, sizeof(b));
+    pf_t f, g;
+    CHECK(find_field(b, n, 2, &f) && find_field(f.data, f.len, 3, &g) && g.v == 1008);
+    n = mt_sf_encode_rr(MT_SF_CLIENT_PING, b, sizeof(b));
+    CHECK(mt_sf_decode(b, n, &sf) && sf.rr == MT_SF_CLIENT_PING);
+
+    mt_mapreport_t mr = {.long_name = "Edge", .short_name = "ED", .firmware_version = "2.5.0.5e0e", .hw_model = 43,
+                         .region = 10, .has_position = true, .lat_i = 129000000, .lon_i = 775000000, .position_precision = 14};
+    n = mt_mapreport_encode(&mr, b, sizeof(b));
+    CHECK(n > 0 && find_field(b, n, 9, &f) && (int32_t)f.v == 129000000 && find_field(b, n, 12, &f) && f.v == 14);
+
+    /* pw_begin/pw_end with a long (2-byte length) body */
+    uint8_t big[300];
+    memset(big, 'x', sizeof(big));
+    pw_t w;
+    pw_init(&w, b, sizeof(b));
+    pw_mark_t m = pw_begin(&w, 1);
+    pw_bytes(&w, 2, big, 200);
+    pw_end(&w, m);
+    CHECK(!w.overflow && find_field(b, w.len, 1, &f) && f.len == 203 && find_field(f.data, f.len, 2, &g) && g.len == 200);
+}
+
+static void test_tak(void)
+{
+    uint8_t b[256];
+    mt_tak_t t = {.cot_type = MT_COT_A_F_G_U_C, .how = MT_COT_HOW_H_E, .team = 10, .role = 1, .has_pos = true,
+                  .lat_i = 129716000, .lon_i = 775946000, .alt = -12, .speed = 3, .course = 9000, .battery = 77,
+                  .geo_src = MT_GEO_SRC_USER, .alt_src = MT_GEO_SRC_USER}, o;
+    strcpy(t.callsign, "EDGE-1");
+    strcpy(t.uid, "!11223344");
+    b[0] = MT_TAK_RAW_FLAGS;
+    size_t n = mt_takv2_encode(&t, b + 1, sizeof(b) - 1);
+    CHECK(n > 0 && mt_tak_port78_decode(b, n + 1, &o) && !o.compressed && o.has_pos);
+    CHECK(o.lat_i == 129716000 && o.lon_i == 775946000 && o.alt == -12 && o.course == 9000 && o.battery == 77);
+    CHECK(o.team == 10 && o.role == 1 && strcmp(o.callsign, "EDGE-1") == 0 && strcmp(o.uid, "!11223344") == 0);
+    pf_t f;
+    CHECK(find_field(b + 1, n, 8, &f) && f.v == 23); /* altitude is sint32: zigzag(-12) = 23 */
+    /* chat */
+    mt_tak_t c = {.cot_type = MT_COT_B_T_F, .has_chat = true};
+    strcpy(c.callsign, "EDGE-1");
+    strcpy(c.chat, "Meet at the gate");
+    strcpy(c.chat_to, "All Chat Rooms");
+    n = mt_takv2_encode(&c, b, sizeof(b));
+    CHECK(mt_takv2_decode(b, n, &o) && o.has_chat && strcmp(o.chat, "Meet at the gate") == 0 && strcmp(o.chat_to, "All Chat Rooms") == 0 &&
+          o.cot_type == MT_COT_B_T_F && !o.has_pos);
+    /* compressed v2 (zstd flags): flagged, not decoded */
+    uint8_t z[4] = {0x01, 0x28, 0xb5, 0x2f};
+    CHECK(mt_tak_port78_decode(z, sizeof(z), &o) && o.compressed && !o.has_pos);
+    /* v1: position readable, compressed strings hidden */
+    mt_tak_t v1 = {.team = 5, .role = 2, .battery = 50, .has_pos = true, .lat_i = -337000000, .lon_i = 1512000000, .alt = 40};
+    strcpy(v1.callsign, "ALPHA");
+    n = mt_takv1_encode(&v1, b, sizeof(b));
+    CHECK(mt_takv1_decode(b, n, &o) && !o.v2 && o.has_pos && o.lat_i == -337000000 && o.alt == 40 && o.team == 5 && o.role == 2 &&
+          strcmp(o.callsign, "ALPHA") == 0);
+    uint8_t cb[300] = {0x08, 0x01};
+    memcpy(cb + 2, b, n);
+    CHECK(mt_takv1_decode(cb, n + 2, &o) && o.compressed && o.callsign[0] == 0 && o.has_pos);
+
+    /* admin: TAK module config (ModuleConfigType 15 -> field 16) */
+    edge_config_t cfg;
+    edge_mesh_mod_t m;
+    base_cfg(&cfg, &m);
+    m.tak_team = 12;
+    m.tak_role = 5;
+    uint8_t pk[8] = {0};
+    adm_ctx_t x = {.my_node = 1, .fw_version = "2.5.0.5e0e", .passkey = pk};
+    adm_result_t res;
+    uint8_t req[32];
+    size_t rl = mesh_admin_build_get_module(15, NULL, req, sizeof(req));
+    pf_t g, h;
+    CHECK(mesh_admin_apply(req, rl, &x, &cfg, &m, &res) && find_field(res.reply, res.reply_len, 8, &f) &&
+          find_field(f.data, f.len, 16, &g) && find_field(g.data, g.len, 1, &h) && h.v == 12);
+    pw_t w;
+    pw_init(&w, req, sizeof(req));
+    pw_mark_t a = pw_begin(&w, 35);
+    pw_mark_t l = pw_begin(&w, 16);
+    pw_u(&w, 1, 3);
+    pw_u(&w, 2, 2);
+    pw_end(&w, l);
+    pw_end(&w, a);
+    CHECK(mesh_admin_apply(req, w.len, &x, &cfg, &m, &res) && res.mod_changed && m.tak_team == 3 && m.tak_role == 2);
+}
+
 int main(void)
 {
     test_frequency();
@@ -376,6 +647,9 @@ int main(void)
     test_dns();
     test_crypto();
     test_pb_more();
+    test_admin();
+    test_ext_pb();
+    test_tak();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

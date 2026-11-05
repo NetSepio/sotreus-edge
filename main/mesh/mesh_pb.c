@@ -648,6 +648,8 @@ bool mt_channelset_decode(const uint8_t *buf, size_t n, mt_channelset_t *out)
                     memcpy(c->psk, g.data, c->psk_len);
                 }
                 if (g.field == 3 && g.wt == WT_LEN) copy_str(c->name, sizeof(c->name), &g);
+                if (g.field == 5 && g.wt == WT_VARINT) c->uplink = g.v != 0;
+                if (g.field == 6 && g.wt == WT_VARINT) c->downlink = g.v != 0;
                 if (g.field == 7 && g.wt == WT_LEN) {
                     pbr_t m = {g.data, g.len, 0};
                     pbf_t h;
@@ -690,6 +692,8 @@ size_t mt_channelset_encode(const mt_channelset_t *cs, uint8_t *buf, size_t cap)
         pbw_t s = {sub, sizeof(sub), 0, false};
         w_bytes(&s, 2, c->psk, c->psk_len);
         w_string(&s, 3, c->name);
+        if (c->uplink) w_varint(&s, 5, 1);
+        if (c->downlink) w_varint(&s, 6, 1);
         if (m.len) w_sub(&s, 7, mod, m.len, !m.overflow);
         w_sub(&w, 1, sub, s.len, !s.overflow);
     }

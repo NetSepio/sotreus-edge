@@ -43,7 +43,7 @@ STATE = {
         "display": {"timeout_s": 60},
         "mesh": {"region": "UNSET", "preset": "LONG_FAST", "hop_limit": 3, "rebroadcast": "all", "tx_power": 0,
                  "channel_num": 0, "node_id": "!5f3bb481", "long_name": "Sotreus Edge 96FF", "short_name": "SEFF",
-                 "nodeinfo_interval_s": 10800, "channels": [{"name": "", "psk": "default", "position_precision": 13}],
+                 "nodeinfo_interval_s": 10800, "channels": [{"name": "", "psk": "default", "position_precision": 13, "uplink": False, "downlink": False}],
                  "role": "CLIENT", "licensed": False, "position": {"mode": "off", "interval_s": 900}, "telemetry_interval_s": 1800,
                  "neighbor_info": {"enabled": False, "interval_s": 21600}, "range_test_interval_s": 0,
                  "notify": {"mode": "off", "gpio": -1},
@@ -53,12 +53,20 @@ STATE = {
                  "canned": ["OK", "On my way", "Need assistance", "All fine here"],
                  "lora": {"freq_offset_hz": 0, "override_freq_mhz": 0, "tx_enabled": True, "override_duty_cycle": False,
                           "rx_boosted": True, "ignore_mqtt": False, "ok_to_mqtt": False},
-                 "ignore": []},
+                 "ignore": [],
+                 "admin": {"enabled": True, "mode": "open", "admin_channel": False, "keys": []},
+                 "remote_hardware": {"enabled": False, "allow_undefined_pins": False, "pins": []},
+                 "store_forward": {"server": False, "heartbeat": True, "return_max": 25, "return_window_min": 240},
+                 "mqtt": {"enabled": False, "address": "mqtt.meshtastic.org", "username": "meshdev", "password_set": True,
+                          "encryption": True, "json": False, "tls": False, "root": "", "proxy_to_client": False,
+                          "map": {"enabled": False, "interval_s": 3600, "precision": 14, "location": False}},
+                 "tak": {"team": "default", "role": "default"},
+                 "audio": {"enabled": False, "ptt_gpio": -1, "bitrate": "default", "i2s_ws": -1, "i2s_sd": -1, "i2s_din": -1, "i2s_sck": -1}},
     },
     "known": [],
     "nodes": [
         {"id": "!a1b2c3d4", "num": 2712847316, "long_name": "Ridge relay", "short_name": "RDG", "hw_model": 43, "role": "ROUTER",
-         "has_public_key": True, "favorite": False, "ignored": False, "last_heard_ago_s": 40, "rssi": -96, "snr": 4.5, "hops_away": 0,
+         "has_public_key": True, "public_key": "q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq80=", "favorite": False, "ignored": False, "last_heard_ago_s": 40, "rssi": -96, "snr": 4.5, "hops_away": 0,
          "device": {"battery_level": 101, "channel_util": 6.2, "air_util_tx": 0.8, "uptime_s": 86400},
          "neighbors": [{"id": "!0c0ffee1", "snr": 6.25}]},
         {"id": "!0c0ffee1", "num": 202375137, "long_name": "Valley base", "short_name": "VLY", "hw_model": 9, "role": "CLIENT",
@@ -77,6 +85,10 @@ STATE = {
     "waypoints": [{"id": 77, "from": "!0c0ffee1", "name": "Water point", "description": "Tap by the gate", "lat": 12.9512, "lon": 77.6021,
                    "expire_unix_s": int(time.time()) + 86400, "icon": 0, "unix_s": int(time.time()) - 900, "provenance": "NETWORK"}],
     "next_id": 1000,
+    "tak": [{"node": "!0c0ffee1", "callsign": "VALLEY-2", "uid": "ANDROID-5f2c", "team": "Cyan", "role": "Team Lead", "battery": 64,
+             "plugin": "v2", "compressed": False, "ago_s": 95,
+             "reported_position": {"lat": 12.9512, "lon": 77.6033, "alt_m": 905, "speed_mps": 0, "course_deg": 0, "provenance": "NETWORK"}},
+            {"node": "!a1b2c3d4", "callsign": "", "uid": "", "team": "", "role": "", "plugin": "v2", "compressed": True, "ago_s": 300}],
 }
 REGIONS = ["US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU", "IN", "NZ_865", "TH", "UA_433", "UA_868",
            "MY_433", "MY_919", "SG_923"]
@@ -104,7 +116,11 @@ def status(args):
                       "relay_skipped": 0, "tx_dropped": 0, "preambles": 7, "headers": 6},
          "channels": [{"index": 0, "name": "LongFast", "hash": 8, "encrypted": True}],
          "role": cfg["mesh"]["role"], "public_key": "6TvroVZE2KjHkif1q0e3S1dYc2nq3nYyD2Oc4pGXr0I=",
-         "channel_util_pct": 4.3, "air_util_tx_pct": 0.12, "duty_cycle_pct": 10, "polite_hold": False, "store_forward_routers": 1}
+         "channel_util_pct": 4.3, "air_util_tx_pct": 0.12, "duty_cycle_pct": 10, "polite_hold": False, "store_forward_routers": 1,
+         "admin": {"enabled": cfg["mesh"]["admin"]["enabled"], "mode": cfg["mesh"]["admin"]["mode"], "keys": len(cfg["mesh"]["admin"]["keys"]), "requests": 2, "refused": 1},
+         "store_forward_server": {"enabled": cfg["mesh"]["store_forward"]["server"], "storage": True, "stored": 12, "capacity": 1008, "history_requests": 1},
+         "mqtt": {"state": "connected" if cfg["mesh"]["mqtt"]["enabled"] else "off", "broker": cfg["mesh"]["mqtt"]["address"], "tls": cfg["mesh"]["mqtt"]["tls"],
+                  "uplinked": 14, "downlinked": 3, "dropped": 0, "connects": 1}}
     if region:
         m["freq_mhz"] = 865.875
         if mesh_on:
@@ -211,6 +227,9 @@ def handle_cmd(req, args):
         patch = {k: v for k, v in patch.items() if k not in ("cmd", "id")}
         if patch.get("mode") == "mesh" and cfg["mesh"]["region"] == "UNSET" and not (patch.get("mesh") or {}).get("region"):
             pass  # the firmware allows it (radio stays silent); the page asks for a region first
+        mq = ((patch.get("mesh") or {}).get("mqtt") or {})
+        if "password" in mq:
+            mq["password_set"] = bool(mq.pop("password"))
         deep_merge(cfg, patch)
         return {**ok, "config": cfg}
     if c == "ctx_get":
@@ -244,6 +263,15 @@ def handle_cmd(req, args):
         return {**ok, "nodes": STATE["nodes"]}
     if c == "mesh_messages":
         return {**ok, "messages": STATE["messages"]}
+    if c == "mesh_tak":
+        return {**ok, "tak": STATE["tak"]}
+    if c in ("mesh_tak_chat", "mesh_tak_position") and mesh_on:
+        if c == "mesh_tak_chat":
+            STATE["next_id"] += 1
+            STATE["messages"].append({"id": STATE["next_id"], "from": cfg["mesh"]["node_id"], "to": "broadcast", "channel": 0, "dir": "sent",
+                                      "provenance": "NETWORK", "pki": False, "ago_s": 0, "status": "sent",
+                                      "text": "[TAK] " + cfg["mesh"]["long_name"] + ": " + req.get("text", "")})
+        return ok
     if c == "mesh_waypoints":
         return {**ok, "waypoints": STATE["waypoints"]}
     if c.startswith("mesh_") and c not in ("mesh_node", "mesh_channel_url", "mesh_new_identity") and not mesh_on:

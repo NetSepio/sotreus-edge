@@ -53,27 +53,39 @@ static const char *reset_reason(void)
     }
 }
 
+/*
+ * Each mode boots on its own: Awareness loads the sighting pipeline and puts
+ * the LoRa radio to sleep; Mesh never starts the sighting pipeline, so the
+ * mesh, MQTT and TLS get that memory. A mode change saves the setting and
+ * restarts the Edge.
+ */
 void edge_app_apply_mode(edge_mode_t mode)
 {
-    if ((int)mode == s_mode) return;
-    if (mode == EDGE_MODE_MESH) {
-        sense_stop(); /* writes every open sighting before pausing */
-        mesh_start();
-    } else {
-        mesh_stop();
-        sense_start();
-    }
-    bool first = s_mode < 0;
-    s_mode = (int)mode;
     const char *name = mode == EDGE_MODE_MESH ? "mesh" : "awareness";
-    ESP_LOGI(TAG, "mode: %s", name);
-    if (!first) edge_record_event(EDGE_EVT_MODE, name);
+    if (s_mode < 0) {
+        s_mode = (int)mode;
+        if (mode == EDGE_MODE_MESH) mesh_start();
+        else sense_start();
+        ESP_LOGI(TAG, "mode: %s", name);
+        return;
+    }
+    if ((int)mode == s_mode) return;
+    ESP_LOGI(TAG, "mode change to %s: restarting", name);
+    if (s_mode == EDGE_MODE_AWARENESS) sense_stop(); /* writes every open sighting */
+    edge_record_event(EDGE_EVT_MODE, name);
+    ui_show_restart(mode == EDGE_MODE_MESH ? "MESH" : "AWARE");
     cJSON *ev = cJSON_CreateObject();
     cJSON_AddStringToObject(ev, "ev", "mode");
     cJSON_AddStringToObject(ev, "mode", name);
-    cJSON_AddBoolToObject(ev, "awareness_paused", mode == EDGE_MODE_MESH);
+    cJSON_AddBoolToObject(ev, "restarting", true);
     edge_events_publish(ev);
     cJSON_Delete(ev);
+    edge_app_reboot_later(2500);
+}
+
+int edge_app_mode(void)
+{
+    return s_mode;
 }
 
 static void reboot_cb(void *arg)
@@ -84,6 +96,7 @@ static void reboot_cb(void *arg)
 void edge_app_reboot_later(uint32_t delay_ms)
 {
     mesh_save_now(); /* keep the node list and messages across the restart */
+    ui_show_restart(NULL);
     static esp_timer_handle_t t;
     if (!t) {
         esp_timer_create_args_t a = {.callback = reboot_cb, .name = "reboot"};
@@ -126,7 +139,9 @@ void app_main(void)
 
     edge_events_init();
     edge_api_init();
-    sense_init();
+    edge_config_t boot_cfg;
+    edge_config_get(&boot_cfg);
+    if (boot_cfg.mode != EDGE_MODE_MESH) sense_init(); /* Mesh boots without the sighting pipeline */
     if (mesh_init() != ESP_OK) ESP_LOGE(TAG, "mesh task could not start");
     ESP_ERROR_CHECK(edge_wifi_init());
     if (edge_ble_init() != ESP_OK) ESP_LOGE(TAG, "Bluetooth unavailable");

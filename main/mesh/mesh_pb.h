@@ -207,6 +207,7 @@ typedef struct {
     uint8_t psk[32];
     uint8_t psk_len;
     uint32_t position_precision;
+    bool uplink, downlink;   /* MQTT */
 } mt_chset_ch_t;
 
 typedef struct {

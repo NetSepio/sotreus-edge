@@ -70,3 +70,8 @@ cJSON *mesh_status_json(void);
 cJSON *mesh_nodes_json(void);
 cJSON *mesh_messages_json(void);
 cJSON *mesh_waypoints_json(void);
+
+/* ATAK: Meshtastic ATAK plugin packets (v1 port 72, v2 port 78). */
+esp_err_t mesh_tak_send_chat(const char *text, uint8_t channel);   /* GeoChat to all chat rooms */
+esp_err_t mesh_tak_send_position(uint8_t channel);                 /* our position as a TAK report */
+cJSON *mesh_tak_json(void);                                        /* TAK users heard */
