@@ -31,15 +31,26 @@ static const char *TAG = "wifi";
 #define STA_RETRY_MS        30000
 #define SENSE_SCAN_MS       45000
 #define MAX_FAILS           3
-#define MAX_SCAN_LIST       16
+#define MAX_NEARBY          24
+#define NEARBY_TTL_MS       (5 * 60 * 1000)
+#define SWEEP_HOME_MS       600     /* time back on the link channel between swept channels */
+#define SCAN_STUCK_MS       20000
+#define SENSE_SCAN_STA_MS   120000
 
+/* Networks heard recently, from scans and from beacons the sniffer hears. */
 typedef struct {
     char ssid[33];
     int8_t rssi;
     uint8_t channel;
     uint8_t auth;
-    bool known;
-} scan_entry_t;
+    int64_t seen;
+} near_t;
+
+typedef struct {
+    char ssid[33];
+    uint8_t channel;
+    int8_t rssi;
+} cand_t;
 
 static SemaphoreHandle_t s_lock;
 static TaskHandle_t s_task;
@@ -65,8 +76,42 @@ static int s_cand_idx;
 static char s_ip[16];
 static char s_joined[33];
 static uint8_t s_ap_mac[6], s_sta_mac[6];
-static scan_entry_t s_scan[MAX_SCAN_LIST];
-static int s_scan_n;
+static near_t s_near[MAX_NEARBY];
+static portMUX_TYPE s_near_mux = portMUX_INITIALIZER_UNLOCKED;
+static cand_t s_cand[EDGE_MAX_WIFI_NETS];
+static int s_ncand;
+static bool s_scan_in_flight;
+static bool s_link_scan_complete;
+static uint8_t s_sweep_ch;      /* next channel of a channel-by-channel sweep, 0 = none */
+static int64_t s_sweep_next_at, s_scan_issued, s_scan_started, s_last_scan_done;
+
+static void near_update(const uint8_t *ssid, size_t len, int8_t rssi, uint8_t channel, uint8_t auth)
+{
+    if (len == 0 || len > 32 || ssid[0] == 0) return;
+    int64_t t = edge_uptime_ms();
+    portENTER_CRITICAL(&s_near_mux);
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < MAX_NEARBY; i++) {
+        if (s_near[i].ssid[0] && strlen(s_near[i].ssid) == len && memcmp(s_near[i].ssid, ssid, len) == 0) {
+            slot = i;
+            break;
+        }
+        if (s_near[i].seen < s_near[oldest].seen) oldest = i;
+    }
+    bool fresh = slot < 0;
+    if (fresh) slot = oldest;
+    near_t *e = &s_near[slot];
+    /* Keep the strongest access point per name while it is recent. */
+    if (fresh || rssi >= e->rssi || t - e->seen > 30000) {
+        memcpy(e->ssid, ssid, len);
+        e->ssid[len] = '\0';
+        e->rssi = rssi;
+        e->channel = channel;
+        e->auth = auth;
+    }
+    e->seen = t;
+    portEXIT_CRITICAL(&s_near_mux);
+}
 
 const char *edge_wifi_state_name(edge_wifi_state_t s)
 {
@@ -199,6 +244,7 @@ static void parse_mgmt(const uint8_t *f, size_t len, int8_t rssi, uint8_t rx_cha
     if (!ssid_seen) r.flags |= EDGE_APF_HIDDEN;
     if (!rsn) auth = wpa ? EDGE_AUTH_WPA : (cap & 0x0010) ? EDGE_AUTH_WEP : EDGE_AUTH_OPEN;
     r.auth = auth;
+    if (!(r.flags & EDGE_APF_HIDDEN)) near_update(r.ssid, r.ssid_len, rssi, r.channel, auth);
     sense_feed_ap(&r);
 }
 
@@ -246,17 +292,41 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 /* ---- Link helpers ------------------------------------------------------------ */
 
-static void start_scan(bool for_link)
+/* A client on our access point, or our own station link, would lose its
+ * connection during a full 13-channel passive scan (~5-10 s off channel). */
+static bool link_in_use(void)
 {
-    if (s_scan_busy) return;
+    return (s_state == EDGE_WIFI_AP && s_stations > 0) || s_state == EDGE_WIFI_STA_CONNECTED;
+}
+
+static bool issue_scan(uint8_t channel)
+{
     wifi_scan_config_t sc = {
+        .channel = channel, /* 0 = all */
         .show_hidden = true,
         .scan_type = WIFI_SCAN_TYPE_PASSIVE, /* listen only: no probe requests from the Edge */
         /* scan_time left at 0: Bluetooth coexistence requires the default passive dwell. */
+        .home_chan_dwell_time = 150,
     };
-    if (esp_wifi_scan_start(&sc, false) == ESP_OK) {
+    if (esp_wifi_scan_start(&sc, false) != ESP_OK) return false;
+    s_scan_in_flight = true;
+    s_scan_issued = now_ms();
+    return true;
+}
+
+static void start_scan(bool for_link)
+{
+    if (s_scan_busy) return;
+    s_scan_started = now_ms();
+    s_scan_for_link = for_link;
+    if (link_in_use()) {
+        /* Channel by channel, returning to the link channel in between. */
+        s_sweep_ch = 1;
+        s_sweep_next_at = s_scan_started;
         s_scan_busy = true;
-        s_scan_for_link = for_link;
+    } else if (issue_scan(0)) {
+        s_sweep_ch = 0;
+        s_scan_busy = true;
     }
 }
 
@@ -288,11 +358,6 @@ static void collect_scan(void)
     }
     if (esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) n = 0;
 
-    edge_wifi_net_t known[EDGE_MAX_WIFI_NETS];
-    int nk = edge_wifi_nets_get(known, EDGE_MAX_WIFI_NETS);
-
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_scan_n = 0;
     for (int i = 0; i < n; i++) {
         /* Scan lists are another view of the same access points the sniffer sees. */
         if (s_sniff_aps) {
@@ -304,31 +369,79 @@ static void collect_scan(void)
             if (!r.ssid_len) r.flags |= EDGE_APF_HIDDEN;
             sense_feed_ap(&r);
         }
-        if (!recs[i].ssid[0] || s_scan_n >= MAX_SCAN_LIST) continue;
-        bool dup = false;
-        for (int k = 0; k < s_scan_n; k++) dup |= strcmp(s_scan[k].ssid, (const char *)recs[i].ssid) == 0;
-        if (dup) continue; /* records are sorted strongest first */
-        scan_entry_t *e = &s_scan[s_scan_n++];
-        edge_strlcpy(e->ssid, (const char *)recs[i].ssid, sizeof(e->ssid));
-        e->rssi = recs[i].rssi;
-        e->channel = recs[i].primary;
-        e->auth = map_auth(recs[i].authmode);
-        e->known = false;
-        for (int k = 0; k < nk; k++) e->known |= strcmp(known[k].ssid, e->ssid) == 0;
+        near_update(recs[i].ssid, strnlen((const char *)recs[i].ssid, 32), recs[i].rssi, recs[i].primary,
+                    map_auth(recs[i].authmode));
     }
-    xSemaphoreGive(s_lock);
     free(recs);
 }
 
-/* Returns the index in s_scan of the n-th known network (strongest first), or -1. */
+/* Known networks heard since the scan started, strongest first. */
+static void build_candidates(void)
+{
+    edge_wifi_net_t known[EDGE_MAX_WIFI_NETS];
+    int nk = edge_wifi_nets_get(known, EDGE_MAX_WIFI_NETS);
+    s_ncand = 0;
+    portENTER_CRITICAL(&s_near_mux);
+    for (int i = 0; i < MAX_NEARBY; i++) {
+        if (!s_near[i].ssid[0] || s_near[i].seen < s_scan_started) continue;
+        for (int k = 0; k < nk && s_ncand < EDGE_MAX_WIFI_NETS; k++) {
+            if (strcmp(known[k].ssid, s_near[i].ssid) == 0) {
+                edge_strlcpy(s_cand[s_ncand].ssid, s_near[i].ssid, sizeof(s_cand[0].ssid));
+                s_cand[s_ncand].channel = s_near[i].channel;
+                s_cand[s_ncand].rssi = s_near[i].rssi;
+                s_ncand++;
+            }
+        }
+    }
+    portEXIT_CRITICAL(&s_near_mux);
+    for (int i = 1; i < s_ncand; i++) {
+        for (int j = i; j > 0 && s_cand[j].rssi > s_cand[j - 1].rssi; j--) {
+            cand_t t = s_cand[j];
+            s_cand[j] = s_cand[j - 1];
+            s_cand[j - 1] = t;
+        }
+    }
+}
+
 static int known_candidate(int nth)
 {
-    int seen = 0;
-    for (int i = 0; i < s_scan_n; i++) {
-        if (!s_scan[i].known) continue;
-        if (seen++ == nth) return i;
+    return nth < s_ncand ? nth : -1;
+}
+
+/* Drives full scans and channel sweeps; flags completion for the link logic. */
+static void scan_service(void)
+{
+    int64_t t = now_ms();
+    if (s_scan_in_flight && (s_scan_done || t - s_scan_issued > SCAN_STUCK_MS)) {
+        s_scan_in_flight = false;
+        bool done = s_scan_done;
+        s_scan_done = false;
+        if (done) {
+            collect_scan();
+        } else {
+            esp_wifi_scan_stop();
+        }
+        if (s_sweep_ch) {
+            s_sweep_ch++;
+            s_sweep_next_at = t + SWEEP_HOME_MS;
+        }
     }
-    return -1;
+    if (s_sweep_ch && !s_scan_in_flight && t >= s_sweep_next_at) {
+        if (s_sweep_ch > 13 || s_state == EDGE_WIFI_STA_CONNECTING) {
+            s_sweep_ch = 0; /* finished (or the link needs the radio) */
+        } else if (!issue_scan(s_sweep_ch)) {
+            s_sweep_ch++; /* skip a channel the driver refused */
+        }
+    }
+    if (s_scan_busy && !s_scan_in_flight && !s_sweep_ch) {
+        s_scan_busy = false;
+        s_last_scan_done = t;
+        if (s_scan_for_link) {
+            s_scan_for_link = false;
+            build_candidates();
+            s_link_scan_complete = true;
+        }
+    }
 }
 
 static void set_ap_config(void)
@@ -367,13 +480,13 @@ static void go_ap(void)
     ESP_LOGI(TAG, "access point %s on channel %d", edge_identity()->ap_ssid, CONFIG_EDGE_AP_CHANNEL);
 }
 
-static void connect_to(int scan_idx)
+static void connect_to(int cand_idx)
 {
     edge_wifi_net_t known[EDGE_MAX_WIFI_NETS];
     int nk = edge_wifi_nets_get(known, EDGE_MAX_WIFI_NETS);
     const edge_wifi_net_t *net = NULL;
     for (int k = 0; k < nk; k++) {
-        if (strcmp(known[k].ssid, s_scan[scan_idx].ssid) == 0) net = &known[k];
+        if (strcmp(known[k].ssid, s_cand[cand_idx].ssid) == 0) net = &known[k];
     }
     if (!net) return;
     esp_wifi_set_mode(WIFI_MODE_STA);
@@ -383,14 +496,14 @@ static void connect_to(int scan_idx)
     edge_strlcpy((char *)sta.sta.password, net->password, sizeof(sta.sta.password));
     sta.sta.threshold.authmode = net->password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     sta.sta.pmf_cfg.capable = true;
-    sta.sta.channel = s_scan[scan_idx].channel;
+    sta.sta.channel = s_cand[cand_idx].channel;
     esp_wifi_disconnect();
     esp_wifi_set_config(WIFI_IF_STA, &sta);
     s_disconnected = false;
     s_got_ip = false;
     esp_wifi_connect();
     edge_strlcpy(s_joined, net->ssid, sizeof(s_joined));
-    s_cur_channel = s_scan[scan_idx].channel;
+    s_cur_channel = s_cand[cand_idx].channel;
     s_state = EDGE_WIFI_STA_CONNECTING;
     s_connect_started = now_ms();
     ESP_LOGI(TAG, "joining %s", net->ssid);
@@ -443,12 +556,10 @@ static void link_step(const edge_config_t *cfg)
         }
     }
 
-    if (s_scan_done) {
-        s_scan_done = false;
-        s_scan_busy = false;
-        collect_scan();
-        if (s_scan_for_link) {
-            s_scan_for_link = false;
+    scan_service();
+    if (s_link_scan_complete) {
+        s_link_scan_complete = false;
+        {
             int idx = known_candidate(0);
             if (s_state == EDGE_WIFI_STA_SEARCHING) {
                 if (idx >= 0) {
@@ -547,7 +658,8 @@ static void sniff_step(void)
         }
         s_hop_step++;
         if (esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) == ESP_OK) s_cur_channel = ch;
-    } else if (!hop && s_hopping && s_state == EDGE_WIFI_AP && s_cur_channel != CONFIG_EDGE_AP_CHANNEL) {
+    } else if (!hop && s_hopping && !s_scan_busy && s_stations == 0 && s_state == EDGE_WIFI_AP &&
+               s_cur_channel != CONFIG_EDGE_AP_CHANNEL) {
         if (esp_wifi_set_channel(CONFIG_EDGE_AP_CHANNEL, WIFI_SECOND_CHAN_NONE) == ESP_OK) {
             s_cur_channel = CONFIG_EDGE_AP_CHANNEL;
         }
@@ -555,8 +667,9 @@ static void sniff_step(void)
     s_hopping = hop;
 
     /* Fixed channel: complement the single-channel view with passive scans. */
-    if (!hop && s_sniff_aps && !s_scan_busy && t - s_last_sense_scan > SENSE_SCAN_MS &&
-        (s_state == EDGE_WIFI_AP || s_state == EDGE_WIFI_STA_CONNECTED)) {
+    int64_t every = s_state == EDGE_WIFI_STA_CONNECTED ? SENSE_SCAN_STA_MS : SENSE_SCAN_MS;
+    if (!hop && s_sniff_aps && !s_scan_busy && t - s_last_sense_scan > every &&
+        ((s_state == EDGE_WIFI_AP && s_stations == 0) || s_state == EDGE_WIFI_STA_CONNECTED)) {
         s_last_sense_scan = t;
         start_scan(false);
     }
@@ -585,6 +698,16 @@ esp_err_t edge_wifi_init(void)
     ESP_ERROR_CHECK(esp_netif_init());
     s_sta_netif = esp_netif_create_default_wifi_sta();
     s_ap_netif = esp_netif_create_default_wifi_ap();
+
+    /* Hand out the Edge itself as DNS server on its access point (captive portal). */
+    esp_netif_dhcps_stop(s_ap_netif);
+    esp_netif_dns_info_t dns = {0};
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    dns.ip.u_addr.ip4.addr = ESP_IP4TOADDR(192, 168, 4, 1);
+    esp_netif_set_dns_info(s_ap_netif, ESP_NETIF_DNS_MAIN, &dns);
+    uint8_t offer_dns = 0x02; /* OFFER_DNS */
+    esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER, &offer_dns, sizeof(offer_dns));
+    esp_netif_dhcps_start(s_ap_netif);
 
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&ic));
@@ -664,19 +787,41 @@ void edge_wifi_get_info(edge_wifi_info_t *o)
 
 cJSON *edge_wifi_scan_json(void)
 {
+    near_t copy[MAX_NEARBY];
+    portENTER_CRITICAL(&s_near_mux);
+    memcpy(copy, s_near, sizeof(copy));
+    portEXIT_CRITICAL(&s_near_mux);
+    /* strongest first */
+    for (int i = 1; i < MAX_NEARBY; i++) {
+        for (int j = i; j > 0 && copy[j].rssi > copy[j - 1].rssi; j--) {
+            near_t t = copy[j];
+            copy[j] = copy[j - 1];
+            copy[j - 1] = t;
+        }
+    }
+    edge_wifi_net_t known[EDGE_MAX_WIFI_NETS];
+    int nk = edge_wifi_nets_get(known, EDGE_MAX_WIFI_NETS);
+    int64_t t = now_ms();
     cJSON *a = cJSON_CreateArray();
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    for (int i = 0; i < s_scan_n; i++) {
+    for (int i = 0; i < MAX_NEARBY; i++) {
+        if (!copy[i].ssid[0] || t - copy[i].seen > NEARBY_TTL_MS) continue;
         cJSON *o = cJSON_CreateObject();
         char ssid[33 * 2];
-        edge_sanitize_text(ssid, sizeof(ssid), (const uint8_t *)s_scan[i].ssid, strlen(s_scan[i].ssid));
+        edge_sanitize_text(ssid, sizeof(ssid), (const uint8_t *)copy[i].ssid, strlen(copy[i].ssid));
         cJSON_AddStringToObject(o, "ssid", ssid);
-        cJSON_AddNumberToObject(o, "rssi", s_scan[i].rssi);
-        cJSON_AddNumberToObject(o, "channel", s_scan[i].channel);
-        cJSON_AddStringToObject(o, "auth", edge_auth_name(s_scan[i].auth));
-        cJSON_AddBoolToObject(o, "known", s_scan[i].known);
+        cJSON_AddNumberToObject(o, "rssi", copy[i].rssi);
+        cJSON_AddNumberToObject(o, "channel", copy[i].channel);
+        cJSON_AddStringToObject(o, "auth", edge_auth_name(copy[i].auth));
+        cJSON_AddNumberToObject(o, "age_s", (double)((t - copy[i].seen) / 1000));
+        bool k = false;
+        for (int n = 0; n < nk; n++) k |= strcmp(known[n].ssid, copy[i].ssid) == 0;
+        cJSON_AddBoolToObject(o, "known", k);
         cJSON_AddItemToArray(a, o);
     }
-    xSemaphoreGive(s_lock);
     return a;
+}
+
+bool edge_wifi_scanning(void)
+{
+    return s_scan_busy || s_scan_requested;
 }

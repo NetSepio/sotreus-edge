@@ -532,6 +532,7 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
             cJSON_AddItemToArray(known, k);
         }
         cJSON_AddItemToObject(r, "nearby", edge_wifi_scan_json());
+        cJSON_AddBoolToObject(r, "scanning", strcmp(cmd, "wifi_scan") == 0 || edge_wifi_scanning());
     } else if (strcmp(cmd, "wifi_add") == 0) {
         const char *ssid = jstr(req, "ssid");
         const char *pw = jstr(req, "password");

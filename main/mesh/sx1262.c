@@ -141,6 +141,23 @@ static esp_err_t set_standby(void)
     return cmd(OP_SET_STANDBY, &p, 1);
 }
 
+uint8_t sx1262_chip_mode(void)
+{
+    if (!s_present || s_asleep) return 0;
+    s_txbuf[0] = 0xc0; /* GetStatus */
+    s_txbuf[1] = 0x00;
+    if (xfer(2) != ESP_OK) return 0;
+    return (s_rxbuf[1] >> 4) & 0x07;
+}
+
+int16_t sx1262_rssi_now(void)
+{
+    uint8_t v = 0;
+    if (!s_present || s_asleep) return 0;
+    if (cmd_read(0x15 /* GetRssiInst */, NULL, 0, &v, 1) != ESP_OK) return 0;
+    return -(int16_t)v / 2;
+}
+
 bool sx1262_present(void)
 {
     return s_present;

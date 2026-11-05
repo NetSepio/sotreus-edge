@@ -69,6 +69,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
   <div class="card">
     <h2>Sotreus Edge</h2>
     <p class="note">Enter the 8-digit setup PIN. Press PRG on the Edge until the ACCESS screen shows it.</p>
+    <p class="note">If this page opened by itself after joining the Edge's Wi-Fi, choose to stay connected without internet when your device asks. Your phone keeps using mobile data for the internet.</p>
     <label for="pin">Setup PIN</label>
     <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9]*">
     <p id="loginErr" class="note" style="color:var(--danger)"></p>
@@ -159,11 +160,20 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
   <div class="card">
     <h2>Known networks</h2>
     <ul class="list" id="knownList"></ul>
+  </div>
+  <div class="card">
+    <h2>Nearby networks</h2>
+    <div class="row"><button id="netScan">Scan nearby</button></div>
+    <p class="note" id="scanNote">Networks the Edge has heard in the last few minutes. Tap one to fill in its name.</p>
+    <ul class="list" id="nearList"></ul>
+  </div>
+  <div class="card">
+    <h2>Add a network</h2>
     <label for="netSsid">Network name</label>
     <input id="netSsid" list="nearby" autocomplete="off"><datalist id="nearby"></datalist>
     <label for="netPass">Password (empty for an open network)</label>
     <input id="netPass" type="password" autocomplete="off">
-    <div class="row" style="margin-top:8px"><button class="primary" id="netAdd">Add network</button><button id="netScan">Scan nearby</button></div>
+    <div class="row" style="margin-top:8px"><button class="primary" id="netAdd">Add network</button></div>
     <p class="note">Network passwords are stored on the Edge only.</p>
   </div>
 </section>
@@ -243,8 +253,19 @@ const obs = [];
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3200); }
 function setToken(t) { token = t; try { t ? sessionStorage.setItem("edgeToken", t) : sessionStorage.removeItem("edgeToken"); } catch (e) {} }
 
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 async function cmd(body) {
-  const r = await fetch("/api/cmd", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify(body) });
+  let r;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      r = await fetch("/api/cmd", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify(body) });
+      break;
+    } catch (e) {
+      /* The Edge's radio may be briefly away on another channel: retry quietly. */
+      if (attempt >= 3) throw new Error("The Edge did not answer. Check that this device is still on its Wi-Fi.");
+      await sleep(1500);
+    }
+  }
   if (r.status === 401) { lock(); throw new Error("Session ended"); }
   const j = await r.json();
   if (!j.ok) throw new Error(j.error || "Request failed");
@@ -431,7 +452,7 @@ $("#msgSend").onclick = async () => {
 
 /* ---------- wifi ---------- */
 async function refreshWifi(scan) {
-  const j = await run({ cmd: scan ? "wifi_scan" : "wifi_list" });
+  const j = await run({ cmd: scan === true ? "wifi_scan" : "wifi_list" });
   if (!j) return;
   $("#knownList").replaceChildren(...(j.known.length ? j.known.map((k) => {
     const li = el("li", "row"); const b = el("button", "danger", "Remove"); b.style.flex = "0 0 auto";
@@ -439,11 +460,26 @@ async function refreshWifi(scan) {
     li.append(el("span", "", k.ssid + (k.has_password ? "" : " (open)")), b); return li;
   }) : [el("li", "muted", "No networks yet. The Edge runs its own access point until one is added.")]));
   $("#nearby").replaceChildren(...j.nearby.map((n) => { const o = el("option"); o.value = n.ssid; o.label = n.rssi + " dBm, " + n.auth; return o; }));
+  $("#nearList").replaceChildren(...(j.nearby.length ? j.nearby.map((n) => {
+    const li = el("li", "row"); const b = el("button", "", n.known ? "Saved" : "Use"); b.style.flex = "0 0 auto"; b.disabled = n.known;
+    b.onclick = () => { $("#netSsid").value = n.ssid; $("#netPass").value = ""; $("#netPass").focus(); };
+    const label = el("span"); label.append(el("strong", "", n.ssid), el("div", "small muted", n.rssi + " dBm · ch " + n.channel + " · " + n.auth + (n.age_s > 30 ? " · heard " + ago(n.age_s * 1000) : "")));
+    li.append(label, b); return li;
+  }) : [el("li", "muted", j.scanning ? "Listening..." : "No networks heard yet. Try Scan nearby.")]));
+  if (scan === "list-only") return j;
   if (config) $("#linkMode").value = config.link;
   const acc = await run({ cmd: "access" });
   if (acc) kv("#apKv", [["Edge network", acc.ap_ssid], ["Edge network password", acc.ap_password], ["Edge address on it", "http://192.168.4.1"]]);
+  return j;
 }
-$("#netScan").onclick = () => { toast("Scanning for a few seconds"); setTimeout(() => refreshWifi(false), 4000); run({ cmd: "wifi_scan" }); };
+$("#netScan").onclick = async () => {
+  const b = $("#netScan"); b.disabled = true; b.textContent = "Scanning...";
+  $("#scanNote").textContent = "Listening on each channel; this takes up to 20 seconds. If this device is on the Edge's own Wi-Fi, the page may pause for a moment.";
+  let j = await refreshWifi(true);
+  for (let i = 0; i < 12 && j && j.scanning; i++) { await sleep(2500); j = await refreshWifi("list-only"); }
+  b.disabled = false; b.textContent = "Scan nearby";
+  $("#scanNote").textContent = "Networks the Edge has heard in the last few minutes. Tap one to fill in its name.";
+};
 $("#netAdd").onclick = async () => {
   const ssid = $("#netSsid").value.trim(); if (!ssid) return;
   if (await run({ cmd: "wifi_add", ssid, password: $("#netPass").value }, "Saved. The Edge will try it now.")) { $("#netSsid").value = ""; $("#netPass").value = ""; refreshWifi(); }

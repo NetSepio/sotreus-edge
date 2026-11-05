@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "edge_dns.h"
 #include "edge_util.h"
 #include "mesh_pb.h"
 #include "mesh_radio.h"
@@ -175,6 +176,59 @@ static void test_util(void)
     CHECK(edge_fnv1a(NULL, 0, (const uint8_t *)"a", 1) == 0xe40c292cu);
 }
 
+/* Query for "captive.apple.com" with the given type, plus an EDNS OPT record. */
+static int make_query(uint8_t *q, uint16_t qtype)
+{
+    static const uint8_t hdr[] = {0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 1};
+    int n = 0;
+    memcpy(q, hdr, sizeof(hdr));
+    n = sizeof(hdr);
+    static const char *labels[] = {"captive", "apple", "com"};
+    for (int i = 0; i < 3; i++) {
+        q[n++] = (uint8_t)strlen(labels[i]);
+        memcpy(q + n, labels[i], strlen(labels[i]));
+        n += (int)strlen(labels[i]);
+    }
+    q[n++] = 0;
+    q[n++] = (uint8_t)(qtype >> 8);
+    q[n++] = (uint8_t)qtype;
+    q[n++] = 0;
+    q[n++] = 1;
+    static const uint8_t opt[] = {0, 0, 41, 0x10, 0, 0, 0, 0, 0, 0, 0};
+    memcpy(q + n, opt, sizeof(opt));
+    return n + (int)sizeof(opt);
+}
+
+static void test_dns(void)
+{
+    uint8_t q[512];
+    int qlen = make_query(q, 1);
+    int qend = qlen - 11;
+    int r = edge_dns_answer(q, qlen, sizeof(q), false);
+    CHECK(r == qend + 16);
+    CHECK(q[0] == 0x12 && q[1] == 0x34);          /* id kept */
+    CHECK((q[2] & 0x80) && (q[2] & 0x04));        /* response, authoritative */
+    CHECK((q[3] & 0x0f) == 0);                    /* NOERROR */
+    CHECK(q[7] == 1 && q[11] == 0);               /* one answer, EDNS dropped */
+    CHECK(q[r - 4] == 192 && q[r - 3] == 168 && q[r - 2] == 4 && q[r - 1] == 1);
+    CHECK(q[qend] == 0xc0 && q[qend + 1] == 0x0c);
+
+    qlen = make_query(q, 28); /* AAAA */
+    r = edge_dns_answer(q, qlen, sizeof(q), false);
+    CHECK(r == qlen - 11 && q[7] == 0 && (q[3] & 0x0f) == 0);
+
+    qlen = make_query(q, 1);
+    r = edge_dns_answer(q, qlen, sizeof(q), true); /* logged-in client */
+    CHECK(r == qlen - 11 && q[7] == 0 && (q[3] & 0x0f) == 3);
+
+    qlen = make_query(q, 1);
+    q[2] |= 0x80; /* a response: ignore */
+    CHECK(edge_dns_answer(q, qlen, sizeof(q), false) == 0);
+    qlen = make_query(q, 1);
+    CHECK(edge_dns_answer(q, 20, sizeof(q), false) == 0); /* truncated */
+    CHECK(edge_dns_answer(q, 5, sizeof(q), false) == 0);
+}
+
 int main(void)
 {
     test_frequency();
@@ -184,6 +238,7 @@ int main(void)
     test_data_roundtrip();
     test_user_position();
     test_util();
+    test_dns();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

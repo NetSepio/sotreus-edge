@@ -34,6 +34,17 @@ record types) keep the version. Breaking changes bump it.
 * **Records.** `records` carries a byte stream of back-to-back 256-byte
   records (section 4). Reassemble by counting bytes.
 
+### Captive portal (access point only)
+
+The access point's DHCP hands out `192.168.4.1` as the DNS server. Until a
+device logs in, every name resolves to the Edge, and unknown paths
+(including the OS connectivity checks) redirect to `http://192.168.4.1/`.
+After a successful `/api/login` from that device's address, its DNS queries
+get NXDOMAIN, so the OS treats the network as having no internet and keeps
+its other connection (mobile data) for internet traffic. The app should
+expect this and bind its sockets to the Edge's Wi-Fi network (Android
+`Network.bindSocket` / `ConnectivityManager.bindProcessToNetwork`).
+
 ### USB serial console
 
 115200 baud, one JSON command per line. Responses are printed as
@@ -73,7 +84,7 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `set_config` | `config`: partial config object | new `config`; applies without reboot |
 | `set_mode` | `mode`: `awareness` \| `mesh` | new `config` |
 | `set_time` | `unix_ms`, optional `source` | sets wall time; the phone should send it on every connect |
-| `wifi_list` / `wifi_scan` | | `known` (no passwords), `nearby` (last scan); `wifi_scan` also starts a scan |
+| `wifi_list` / `wifi_scan` | | `known` (no passwords), `nearby` (networks heard in the last 5 min: scans plus sniffed beacons, with `age_s`), `scanning`; `wifi_scan` also starts a scan. Poll `wifi_list` until `scanning` is false (5-20 s). While a client uses the Edge's access point, the scan goes one channel at a time so the client stays connected. |
 | `wifi_add` | `ssid`, `password` (empty = open) | |
 | `wifi_remove` | `ssid` | |
 | `access` | | `pin`, `ap_ssid`, `ap_password` |
@@ -84,7 +95,7 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `watch` | `kind`: `ble` \| `wifi`, `addr`, `seconds ≤ 600` | streams `rssi` events for one device (proximity check) |
 | `unwatch` | | |
 | `mesh_send` | `text` (1-200 bytes), `to` (`broadcast` \| `!aabbccdd` \| number), `channel`, `want_ack` | `packet_id`; delivery arrives as `mesh_tx` events |
-| `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table / last 24 messages / radio state and counters |
+| `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table / last 16 messages / radio state, counters (including `preambles` and `headers` heard), and `radio.chip_mode` / `radio.rssi_now` while running |
 | `mesh_new_identity` | | new random `node_id` |
 | `regions` | | region and preset names |
 | `pairing_open` | `seconds` (default 120) | |

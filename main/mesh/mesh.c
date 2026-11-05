@@ -139,7 +139,7 @@ static int64_t s_air_bucket_start;
 static int s_air_idx;
 
 static struct {
-    uint32_t rx_ok, rx_crc, rx_undecoded, rx_dupe, tx_ok, relayed, relay_cancelled, tx_dropped;
+    uint32_t rx_ok, rx_crc, rx_undecoded, rx_dupe, tx_ok, relayed, relay_cancelled, tx_dropped, preambles, headers;
 } s_st;
 
 /* ---- Small helpers ---------------------------------------------------------- */
@@ -710,6 +710,8 @@ static void handle_irq(void)
         if (!irq) return;
         sx1262_clear_irq(irq);
         if (irq & (SX_IRQ_PREAMBLE | SX_IRQ_HEADER_VALID)) s_rx_activity = now_ms();
+        if (irq & SX_IRQ_PREAMBLE) s_st.preambles++;
+        if (irq & SX_IRQ_HEADER_VALID) s_st.headers++;
         if (irq & (SX_IRQ_CRC_ERR | SX_IRQ_HEADER_ERR)) {
             s_rx_activity = 0;
             s_st.rx_crc++;
@@ -1015,6 +1017,14 @@ cJSON *mesh_status_json(void)
     cJSON_AddNumberToObject(st, "relayed", s_st.relayed);
     cJSON_AddNumberToObject(st, "relay_skipped", s_st.relay_cancelled);
     cJSON_AddNumberToObject(st, "tx_dropped", s_st.tx_dropped);
+    cJSON_AddNumberToObject(st, "preambles", s_st.preambles);
+    cJSON_AddNumberToObject(st, "headers", s_st.headers);
+    if (s_running && s_region && s_radio_ok) {
+        static const char *MODES[] = {"?", "?", "standby_rc", "standby_xosc", "fs", "rx", "tx", "?"};
+        cJSON *radio = cJSON_AddObjectToObject(o, "radio");
+        cJSON_AddStringToObject(radio, "chip_mode", MODES[sx1262_chip_mode() & 7]);
+        cJSON_AddNumberToObject(radio, "rssi_now", sx1262_rssi_now());
+    }
     xSemaphoreGive(s_lock);
     return o;
 }

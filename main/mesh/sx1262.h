@@ -43,3 +43,7 @@ void sx1262_clear_irq(uint16_t mask);
 esp_err_t sx1262_read_packet(uint8_t *buf, size_t cap, size_t *len, int16_t *rssi, float *snr);
 bool sx1262_dio1_high(void);
 bool sx1262_present(void);
+/** Chip mode from GetStatus: 2 STBY_RC, 3 STBY_XOSC, 4 FS, 5 RX, 6 TX (0 on error). */
+uint8_t sx1262_chip_mode(void);
+/** Instantaneous RSSI on the tuned channel while receiving (dBm). */
+int16_t sx1262_rssi_now(void);

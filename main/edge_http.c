@@ -14,12 +14,15 @@
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
 #include "psa/crypto.h"
 
 #include "edge_api.h"
 #include "edge_app.h"
 #include "edge_config.h"
 #include "edge_log.h"
+#include "edge_portal.h"
 #include "edge_records.h"
 #include "edge_time.h"
 #include "edge_util.h"
@@ -53,6 +56,7 @@ static void sessions_check_pin(void)
         memset(s_tokens, 0, sizeof(s_tokens));
         for (int i = 0; i < MAX_WS; i++) s_ws_fds[i] = -1;
         edge_strlcpy(s_pin_seen, pin, sizeof(s_pin_seen));
+        edge_portal_reset();
     }
 }
 
@@ -91,6 +95,7 @@ void edge_http_logout_all(void)
     memset(s_tokens, 0, sizeof(s_tokens));
     for (int i = 0; i < MAX_WS; i++) s_ws_fds[i] = -1;
     xSemaphoreGive(s_lock);
+    edge_portal_reset();
 }
 
 static bool authorized(httpd_req_t *req)
@@ -99,6 +104,51 @@ static bool authorized(httpd_req_t *req)
     if (httpd_req_get_hdr_value_str(req, "Authorization", h, sizeof(h)) != ESP_OK) return false;
     if (strncmp(h, "Bearer ", 7) != 0) return false;
     return token_valid(h + 7);
+}
+
+/* ---- Captive portal helpers -------------------------------------------------------- */
+
+/* IPv4 address (network order) of the peer or of our end of the socket. */
+static uint32_t sock_ipv4(int fd, bool peer)
+{
+    struct sockaddr_storage ss;
+    socklen_t l = sizeof(ss);
+    int r = peer ? getpeername(fd, (struct sockaddr *)&ss, &l) : getsockname(fd, (struct sockaddr *)&ss, &l);
+    if (r != 0) return 0;
+    if (ss.ss_family == AF_INET) return ((struct sockaddr_in *)&ss)->sin_addr.s_addr;
+    if (ss.ss_family == AF_INET6) {
+        uint32_t v; /* IPv4-mapped IPv6 address: last four bytes */
+        memcpy(&v, ((uint8_t *)&((struct sockaddr_in6 *)&ss)->sin6_addr) + 12, 4);
+        return v;
+    }
+    return 0;
+}
+
+/* True when the request came in on the Edge's own access point. */
+static bool via_ap(httpd_req_t *req)
+{
+    return sock_ipv4(httpd_req_to_sockfd(req), false) == inet_addr(EDGE_PORTAL_IP);
+}
+
+static esp_err_t redirect_to_portal(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://" EDGE_PORTAL_IP "/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_sendstr(req, "<a href=\"http://" EDGE_PORTAL_IP "/\">Sotreus Edge setup</a>");
+}
+
+/* Unknown paths, including every OS connectivity check (generate_204,
+ * hotspot-detect.html, connecttest.txt, ...): open the setup page for devices
+ * on the access point that have not logged in yet; plain 404 otherwise. */
+static esp_err_t h_not_found(httpd_req_t *req, httpd_err_code_t err)
+{
+    if (via_ap(req) && !edge_portal_is_done(sock_ipv4(httpd_req_to_sockfd(req), true))) {
+        return redirect_to_portal(req);
+    }
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
+    return ESP_FAIL;
 }
 
 /* ---- Responses ----------------------------------------------------------------- */
@@ -157,6 +207,13 @@ static cJSON *read_json_body(httpd_req_t *req)
 
 static esp_err_t h_index(httpd_req_t *req)
 {
+    /* On the access point every name resolves to the Edge: move other host
+     * names to the canonical address so the page always has one origin. */
+    char host[64];
+    if (via_ap(req) && httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK &&
+        strcmp(host, EDGE_PORTAL_IP) != 0 && !strstr(host, ".local")) {
+        return redirect_to_portal(req);
+    }
     common_headers(req);
     httpd_resp_set_hdr(req, "Content-Security-Policy",
                        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
@@ -193,6 +250,7 @@ static esp_err_t h_login(httpd_req_t *req)
         return send_error(req, "401 Unauthorized", "wrong PIN");
     }
     s_fail_count = 0;
+    if (via_ap(req)) edge_portal_client_done(sock_ipv4(httpd_req_to_sockfd(req), true));
     /* The browser's clock is a reasonable source when nothing better has set the time. */
     const cJSON *ms = cJSON_GetObjectItemCaseSensitive(j, "unix_ms");
     if (!edge_time_valid() && cJSON_IsNumber(ms)) {
@@ -485,7 +543,7 @@ esp_err_t edge_http_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 16;
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.close_fn = on_close;
@@ -508,6 +566,7 @@ esp_err_t edge_http_start(void)
         {.uri = "/ws", .method = HTTP_GET, .handler = h_ws, .is_websocket = true},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) httpd_register_uri_handler(s_server, &uris[i]);
+    httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, h_not_found);
     ESP_LOGI(TAG, "HTTP API on port %d", cfg.server_port);
     return ESP_OK;
 }

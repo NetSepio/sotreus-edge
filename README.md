@@ -88,9 +88,12 @@ make -C tests/host test
    bonds. Later, hold **PRG** for 3 s to open it for 2 minutes. The 6-digit
    code appears on the display.
 3. **Or use the setup page.** With no known Wi-Fi, the Edge runs
-   `Sotreus-Edge-XXXX`; the password is on the LINK screen. Join it, open
-   `http://192.168.4.1`, and enter the 8-digit PIN from the ACCESS screen.
-   On a shared network, use the address on the LINK screen or
+   `Sotreus-Edge-XXXX`; the password is on the LINK screen. Join it, and
+   the setup page opens by itself as a sign-in sheet (captive portal). If it
+   doesn't, open `http://192.168.4.1`. Enter the 8-digit PIN from the
+   ACCESS screen. After you log in, the device stops prompting and treats
+   the network as "no internet", so it keeps using mobile data for the
+   internet. On a shared network, use the address on the LINK screen or
    `http://sotreus-edge-xxxx.local`.
 4. **Set the LoRa region** under Settings before using mesh mode. Until a
    region is set, the radio never transmits.
@@ -170,15 +173,25 @@ Verified on a board:
 * Sighting records: written with uptime time, then wall time once the clock
   is set
 * Live switching awareness ↔ mesh, and the AP fallback with channel hopping
+* Nearby Wi-Fi scan from the setup page: completes in about 12 s with
+  20+ networks, in both modes
+* Captive-portal DNS answers (host-tested). The DNS responder starts on the
+  access point.
 * Free heap in awareness mode: about 55 KB (low point about 49 KB). Mesh
   mode: about 84 KB.
+* LoRa with region IN (LongFast, 865.875 MHz, 22 dBm): the radio tunes,
+  transmits its node info, and returns to receive. Noise floor on the
+  channel is about -108 dBm.
 
 Not yet verified:
 
 * Bluetooth pairing and sync with a phone
-* The setup page and HTTP/WebSocket API from a browser
-* LoRa transmit/receive and on-air interop with a stock Meshtastic node.
-  This needs a LoRa region set.
+* The setup page and HTTP/WebSocket API from a browser, including the
+  captive-portal sheet on iOS and Android, and the channel-by-channel scan
+  while a phone is connected to the access point
+* Receiving and decoding Meshtastic packets, and a stock Meshtastic node
+  seeing the Edge. During two test runs no LoRa traffic was in range: zero
+  preambles detected.
 * OTA upload
 
 ## License

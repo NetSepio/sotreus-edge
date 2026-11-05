@@ -23,6 +23,7 @@
 #include "edge_events.h"
 #include "edge_http.h"
 #include "edge_log.h"
+#include "edge_portal.h"
 #include "edge_records.h"
 #include "edge_time.h"
 #include "edge_wifi.h"
@@ -127,6 +128,7 @@ void app_main(void)
     if (mesh_init() != ESP_OK) ESP_LOGE(TAG, "mesh task could not start");
     ESP_ERROR_CHECK(edge_wifi_init());
     if (edge_ble_init() != ESP_OK) ESP_LOGE(TAG, "Bluetooth unavailable");
+    edge_portal_start();
     edge_http_start();
     ui_init();
     edge_console_init();

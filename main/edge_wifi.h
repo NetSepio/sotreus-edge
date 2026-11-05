@@ -47,7 +47,10 @@ void edge_wifi_reconfigure(void);
 void edge_wifi_sniff_set(bool aps, bool probes);
 void edge_wifi_get_info(edge_wifi_info_t *out);
 const char *edge_wifi_state_name(edge_wifi_state_t s);
-/** Networks seen in the last scan (for the setup page), strongest first. */
+/** Networks heard in the last 5 minutes (scans + sniffed beacons), strongest first. */
 cJSON *edge_wifi_scan_json(void);
-/** Starts a scan now (results arrive a couple of seconds later). */
+/** Starts a scan now. Results build up over 5-15 s; edge_wifi_scanning() tells when it is done.
+ *  With a client on the access point (or a joined network) the scan goes one channel at a
+ *  time and returns to the link channel in between, so the connection stays usable. */
 void edge_wifi_request_scan(void);
+bool edge_wifi_scanning(void);
