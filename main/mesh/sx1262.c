@@ -326,7 +326,7 @@ esp_err_t sx1262_configure(const sx1262_cfg_t *c)
 
     write_reg(REG_SYNC_WORD_MSB, (uint8_t)((c->sync_word & 0xf0) | 0x04));
     write_reg(REG_SYNC_WORD_LSB, (uint8_t)(((c->sync_word & 0x0f) << 4) | 0x04));
-    write_reg(REG_RX_GAIN, 0x96); /* boosted RX gain */
+    write_reg(REG_RX_GAIN, c->rx_boosted ? 0x96 : 0x94); /* boosted or power-saving RX gain */
 
     uint16_t mask = SX_IRQ_TX_DONE | SX_IRQ_RX_DONE | SX_IRQ_PREAMBLE | SX_IRQ_HEADER_VALID |
                     SX_IRQ_HEADER_ERR | SX_IRQ_CRC_ERR | SX_IRQ_TIMEOUT;

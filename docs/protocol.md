@@ -45,6 +45,14 @@ its other connection (mobile data) for internet traffic. The app should
 expect this and bind its sockets to the Edge's Wi-Fi network (Android
 `Network.bindSocket` / `ConnectivityManager.bindProcessToNetwork`).
 
+### mDNS
+
+On a shared network the Edge answers as `sotreus-<suffix>.local` (for
+example `sotreus-96ff.local`). It advertises `_http._tcp` and
+`_sotreus._tcp` on port 80 with TXT records `vendor=NetSepio LLC`,
+`product=Sotreus Edge`, `url=https://sotreus.com`, `model`, `fw`, `api=1`,
+`path=/`. The app can browse `_sotreus._tcp` to find Edges on the LAN.
+
 ### USB serial console
 
 115200 baud, one JSON command per line. Responses are printed as
@@ -53,7 +61,7 @@ takes `diag`, which returns heap and per-task stack headroom.
 
 ### HTTP and WebSocket
 
-* `POST /api/login` with `{"pin":"12345678","unix_ms":<optional>}` returns
+* `POST /api/login` with `{"pin":"12345678","unix_ms":<optional>,"tz_offset_min":<optional>}` returns
   `{"ok":true,"token":"<32 hex>"}`. The PIN is on the Edge's ACCESS screen
   and in the `access` command. Five wrong PINs lock login for 60 s. If the
   Edge's clock is unset, `unix_ms` sets it (source `browser`).
@@ -61,9 +69,16 @@ takes `diag`, which returns heap and per-task stack headroom.
   object returns the response object.
 * `GET /api/records?from=<seq>&limit=<n≤5000>&fmt=json|bin` (Bearer)
   returns NDJSON record views (`json`) or raw 256-byte records (`bin`).
-  Headers `X-Edge-Head` and `X-Edge-Oldest` give the stored range.
+  Headers `X-Edge-Head` and `X-Edge-Oldest` give the stored range. The setup
+  page uses `bin` and decodes records in the browser (section 4), so the
+  Edge spends no memory building JSON for them.
 * `GET /ws?token=<token>` is a WebSocket that takes commands in and sends
-  events out (text frames, NDJSON).
+  events out as NDJSON text frames. A new record goes out as a binary frame
+  holding the raw 256-byte record.
+* The Edge makes no internet requests for the page's Context tab. The
+  browser fetches every feed itself (section 8).
+* `GET /assets/<file>`: the map, chart and orbit libraries and the fonts,
+  versioned and gzip-encoded, cached for a year.
 * `POST /api/ota` (Bearer) takes a firmware `.bin` as the body, with an
   optional `X-SHA256` header. The Edge checks the hash and image, switches
   slots and restarts. A new image that does not run cleanly for 30 s rolls
@@ -79,11 +94,11 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | cmd | Parameters | Result |
 |---|---|---|
 | `info` | | `info` (section 5) |
-| `status` | | `status`: uptime, clock, battery, link, ble, awareness, log, mesh |
+| `status` | | `status`: uptime, clock, battery (`present`, `source`: `battery` \| `usb` \| `unknown`), link, ble, awareness, log, mesh |
 | `get_config` | | `config` (section 6) |
 | `set_config` | `config`: partial config object | new `config`; applies without reboot |
 | `set_mode` | `mode`: `awareness` \| `mesh` | new `config` |
-| `set_time` | `unix_ms`, optional `source` | sets wall time; the phone should send it on every connect |
+| `set_time` | `unix_ms`, optional `source`, optional `tz_offset_min` | sets wall time (the phone should send it on every connect) and the local time zone shown on the display |
 | `wifi_list` / `wifi_scan` | | `known` (no passwords), `nearby` (networks heard in the last 5 min: scans plus sniffed beacons, with `age_s`), `scanning`; `wifi_scan` also starts a scan. Poll `wifi_list` until `scanning` is false (5-20 s). While a client uses the Edge's access point, the scan goes one channel at a time so the client stays connected. |
 | `wifi_add` | `ssid`, `password` (empty = open) | |
 | `wifi_remove` | `ssid` | |
@@ -94,10 +109,22 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `log_erase` | `confirm: true` | erases every record in the background (sequence numbers never repeat) |
 | `watch` | `kind`: `ble` \| `wifi`, `addr`, `seconds ≤ 600` | streams `rssi` events for one device (proximity check) |
 | `unwatch` | | |
-| `mesh_send` | `text` (1-200 bytes), `to` (`broadcast` \| `!aabbccdd` \| number), `channel`, `want_ack` | `packet_id`; delivery arrives as `mesh_tx` events |
-| `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table / last 16 messages / radio state, counters (including `preambles` and `headers` heard), and `radio.chip_mode` / `radio.rssi_now` while running |
-| `mesh_new_identity` | | new random `node_id` |
+| `mesh_send` | `text` (1-200 bytes), `to` (`broadcast` \| `!aabbccdd` \| number), `channel`, `want_ack`, optional `reply_id`, optional `reaction: true` (the text is one emoji reacting to `reply_id`) | `packet_id`; delivery arrives as `mesh_tx` events. Direct messages to a node whose key is known go PKI-encrypted. |
+| `mesh_canned` | `index` | sends that quick message on the primary channel; `packet_id` |
+| `mesh_traceroute` | `to`, `channel` | `packet_id`; the route arrives as a `mesh_traceroute` event |
+| `mesh_request_position` | `to`, `channel` | asks the node for its position |
+| `mesh_waypoint` | `lat`, `lon`, `name`, optional `description`, `expire_unix_s`, `icon`, `id` (to update), `channel` | `waypoint_id` |
+| `mesh_waypoints` | | `waypoints` received or sent (up to 16) |
+| `mesh_store_forward` | optional `router`, `channel` | asks a store & forward router for missed channel messages; error if none was heard |
+| `mesh_send_nodeinfo` | | sends node info now |
+| `mesh_set_position` | `lat`, `lon`, optional `alt` | the position used in `client` position mode (from the phone) |
+| `mesh_node` | `id`, optional `favorite`, optional `ignored` | ignoring also adds the node to `mesh.ignore` in config |
+| `mesh_channel_url` | optional `url`, optional `replace` (default true) | `url`: the channels as a Meshtastic link (`https://meshtastic.org/e/#…`). With `url`, applies a link first: `replace` swaps all channels and the LoRa preset, region and hop limit; otherwise its channels are added. |
+| `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table (up to 64, with key, favourite, ignored, device and environment telemetry, neighbours, reported position) / last 32 messages (with `pki`, `reply_id`, `reaction`) / radio state, role, public key, channel use and own airtime, polite hold, store & forward routers heard, paxcounter counts, counters |
+| `mesh_new_identity` | | new random `node_id` and a new key pair |
 | `regions` | | region and preset names |
+| `ctx_get` / `ctx_set` | `ctx`: object (≤ 2 KB) | Context-page settings, stored on the Edge as an opaque JSON object owned by the web app (area rounded to 0.1°, enabled sources) |
+| `diag` | | free heap, largest free block, per-task minimum free stack |
 | `pairing_open` | `seconds` (default 120) | |
 | `ble_forget_all` | `confirm: true` | removes every bond and reopens pairing |
 | `reboot` | | |
@@ -109,14 +136,16 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 |---|---|---|
 | `resp` | reply to a command | see above |
 | `status` | every 10 s while a client listens | `status` |
-| `obs` | a record was written | `rec` (record view, section 4) |
+| `obs` | a record was written | WebSocket: a binary frame with the raw record. Bluetooth: `seq`, `type`; read it with `sync`. |
 | `seen` | a device was first heard in a new sighting window | `kind`, `addr`, `rssi`, `label?`, `uptime_ms` |
 | `rssi` | during `watch`, at most 4 Hz | `kind`, `addr`, `rssi`, `channel?`, `uptime_ms`, `unix_ms?` |
 | `mode` | mode changed | `mode`, `awareness_paused` |
 | `sync_done` | end of a BLE sync | `ok`, `sent`, `next`, `head`, `more` |
 | `mesh_rx` | text addressed to us or the channel | `msg` |
-| `mesh_tx` | our message progressed | `id`, `status`: `sent` \| `delivered` \| `relayed` \| `no_ack` \| `no_relay_heard` \| `failed` (`reason`) |
-| `mesh_node` | node info received | `node` |
+| `mesh_tx` | our message progressed | `id`, `status`: `sent` \| `delivered` \| `relayed` \| `no_ack` \| `no_relay_heard` \| `failed` (`reason`, Meshtastic routing error) |
+| `mesh_node` | node info, position or telemetry received | `node` |
+| `mesh_traceroute` | a route check came back | `id`, `to`, `route`, `snr_towards`, `route_back`, `snr_back` (ids, dB; `null` = unknown) |
+| `mesh_waypoint` | a waypoint was received | `waypoint` |
 
 Live events are best effort. If a client is slow, the Edge drops events and
 counts them (`status.events_dropped`). The record log plus `sync` is the
@@ -124,7 +153,8 @@ reliable path, so de-duplicate by `seq`.
 
 ## 4. Records
 
-Records live in a flash ring (≈ 15,600 slots, oldest overwritten first).
+Records live in a flash ring (≈ 15,100 slots on the 3.7 MB `obslog`
+partition, oldest overwritten first).
 `(info.device_id, seq)` is the stable Edge record ID. `seq` grows by one per
 record and never repeats on a device, including across log erases.
 
@@ -233,7 +263,8 @@ already knows (for example the owner's own networks) and compare.
 Static for a boot, so it is safe for long BLE reads:
 
 ```json
-{"protocol":1,"device_id":"9f3c…","name":"Sotreus Edge","suffix":"1A2B","fw":"0.1.0",
+{"protocol":1,"device_id":"9f3c…","name":"Sotreus Edge","vendor":"NetSepio LLC",
+ "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.1.0",
  "idf":"v6.0.1","hw":"heltec_wifi_lora_32_v3","boot":12,"record_size":256,"record_format":1,
  "probe_salt":"…","caps":{"ble_observation":true,"wifi24_observation":true,
  "wifi_probe_observation":true,"gnss":false,"local_storage":true,"firmware_switching":false,
@@ -255,7 +286,20 @@ second firmware.
   "mesh": {"region": "UNSET", "preset": "LONG_FAST", "hop_limit": 3, "rebroadcast": "all",
            "tx_power": 0, "channel_num": 0, "node_id": "!5ac1e0d2",
            "long_name": "Sotreus Edge 1A2B", "short_name": "SE2B", "nodeinfo_interval_s": 10800,
-           "channels": [{"name": "", "psk": "default"}]}
+           "channels": [{"name": "", "psk": "default", "position_precision": 13}],
+           "role": "CLIENT", "licensed": false,
+           "position": {"mode": "off", "interval_s": 900},
+           "telemetry_interval_s": 1800,
+           "neighbor_info": {"enabled": false, "interval_s": 21600},
+           "range_test_interval_s": 0,
+           "notify": {"mode": "off", "gpio": -1},
+           "detection": {"enabled": false, "gpio": -1, "active_high": false, "min_interval_s": 45, "name": ""},
+           "paxcounter": {"enabled": false, "interval_s": 900},
+           "serial": {"enabled": false, "rx": -1, "tx": -1, "baud": 115200},
+           "canned": ["OK", "On my way", "Need assistance", "All fine here"],
+           "lora": {"freq_offset_hz": 0, "override_freq_mhz": 0, "tx_enabled": true, "override_duty_cycle": false,
+                    "rx_boosted": true, "ignore_mqtt": false, "ok_to_mqtt": false},
+           "ignore": []}
 }
 ```
 
@@ -266,27 +310,86 @@ second firmware.
   `MEDIUM_SLOW`, `MEDIUM_FAST`, `SHORT_SLOW`, `SHORT_FAST` or `SHORT_TURBO`.
 * A channel `psk` is `default` (Meshtastic `AQ==`), `none`, `simpleN`, or
   `base64:<16 or 32 bytes>`. An empty primary channel name means the preset
-  name (`LongFast`), which matches Meshtastic's public default channel.
+  name (`LongFast`), which matches Meshtastic's public default channel. Up to
+  8 channels.
+* `position_precision` (0-32 bits) is how precisely a channel gets this
+  node's position: 0 never, 32 exact, 13 about ±2.9 km (the default on the
+  default-key channel).
+* `rebroadcast` is `all`, `all_skip_decoding`, `local_only`, `known_only`,
+  `none` or `core_portnums_only`. `role` is a Meshtastic role name
+  (`CLIENT`, `CLIENT_MUTE`, `CLIENT_HIDDEN`, `ROUTER`, `ROUTER_LATE`,
+  `REPEATER`, `TRACKER`, `TAK`, `TAK_TRACKER`, `SENSOR`, `LOST_AND_FOUND`).
+* `position.mode` is `off`, `fixed` (with `lat`, `lon`, `alt`) or `client`
+  (the phone hands it over with `mesh_set_position`). The Edge has no GNSS.
+* `licensed: true` turns off all encryption (amateur radio rules); the long
+  name should then be the call sign.
+* Settings saved by firmware before config version 2 are migrated on boot.
 
 ## 7. Meshtastic compatibility
 
 On air the Edge matches Meshtastic 2.x: region frequency slots (djb2 of the
-channel name), sync word 0x2B, 16-symbol preamble, the 16-byte header,
-AES-CTR with the channel key and nonce `packet_id(u64 LE) ‖ from(u32 LE) ‖ 0`,
-and the channel hash. It sends and receives text (port 1). It sends node info
-(port 4) and answers node-info requests. It decodes positions (port 3) and
-routing ACK/NAK (port 5). It ACKs direct messages, retries its own direct
-messages up to 3 times, and relays with Meshtastic's SNR-weighted contention
-window.
+channel name), sync word 0x2B, 16-symbol preamble, the 16-byte header with
+next-hop and relay-node bytes, AES-CTR with the channel key and nonce
+`packet_id(u64 LE) ‖ from(u32 LE) ‖ 0`, and the channel hash.
 
-It does **not** implement the following:
+Covered:
 
-* the Meshtastic phone API, so the Meshtastic app cannot connect to it
-* PKI direct messages. Its node info carries no public key, so other nodes
-  fall back to channel encryption for messages to it.
-* store-and-forward, MQTT, telemetry, range test, traceroute replies and
-  remote admin
-* next-hop routing (it floods)
+* **Messages.** Text on up to 8 channels, direct messages with ACK and up to
+  3 retries (the last one floods), replies and emoji reactions, quick
+  (canned) messages from the page or the PRG button.
+* **PKI.** An X25519 key pair is made on first boot and sent in node info.
+  Direct messages to and from nodes whose key is known use
+  `SHA-256(X25519)` keys and AES-CCM (8-byte tag, 4-byte extra nonce), as in
+  Meshtastic 2.5+.
+* **Routing.** Managed flooding with Meshtastic's SNR-weighted contention
+  window, next-hop learning from ACKs for direct messages, all roles and
+  rebroadcast modes, the ignore list, duty-cycle limits and a polite hold
+  while channel use is above 25 % or own airtime is above half the limit.
+* **Node info, position and telemetry.** Node info with key and role,
+  position (fixed or from the phone, truncated per channel), device metrics
+  (battery or external power), and decoding of others' device and
+  environment telemetry.
+* **Modules.** Traceroute (as origin, relay and destination), neighbour
+  info, waypoints, range test, store & forward (client side), paxcounter
+  (counts only), detection sensor (GPIO), serial text bridge (UART1),
+  external notification (GPIO or LED), lost-and-found beacon.
+* **Channel links.** Export and import of `https://meshtastic.org/e/#…`.
+* **Persistence.** Nodes, messages and waypoints are saved to the `meshdb`
+  partition every 15 minutes and before a restart.
 
-It sends `bitfield = 0`, so its packets are never marked OK for MQTT upload.
+Not covered, and why:
+
+* The Meshtastic phone API, so the Meshtastic app cannot connect. The Sotreus
+  app and the setup page are the clients.
+* MQTT and the IP tunnel: the Edge keeps its network link for the user, not
+  for a broker. It honours `ok_to_mqtt` and `ignore_mqtt` bits from others.
+* Remote admin and remote hardware: no other node may change this Edge.
+* The store & forward server role, audio and ATAK plugin: they need PSRAM or
+  hardware the Heltec V3 does not have.
+
 Its node number is random, not derived from a hardware address.
+
+## 8. Context feeds (setup page)
+
+The Context tab runs entirely in the browser. The Edge stores only the
+page's settings (`ctx_set`) and makes no internet requests for it.
+
+| Feed | Fetched from | What it is sent |
+|---|---|---|
+| Map tiles | OpenFreeMap | the tiles in view |
+| Earthquakes | USGS | nothing (world list, filtered in the browser) |
+| Natural events | NASA EONET | nothing (world list) |
+| Air quality | Open-Meteo | a 0.5° or 0.1° cell centre |
+| Satellites | CelesTrak | group names |
+| Warnings, United States | NWS | the state code |
+| Approximate area | GeoJS | the browser's IP address, only on request |
+| Aircraft | adsb.lol, through the relay | a 0.5° grid point and a radius |
+| Disaster alerts | GDACS, through the relay | nothing (world list) |
+| Warnings, Europe | MeteoAlarm, through the relay | the country name |
+
+adsb.lol, GDACS and MeteoAlarm do not let a web page read them (no CORS
+headers, or a bot check). The browser reaches them through a relay you set,
+a small Cloudflare Worker in `tools/context-relay/`. With no relay set,
+those cards explain why they are empty and nothing is sent. The browser can
+read the device's own location only over HTTPS, which the Edge does not
+serve, so the area is typed, picked on the map, or taken from the IP address.

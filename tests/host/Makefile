@@ -1,7 +1,7 @@
 # Host-side unit tests for pure-C firmware modules (no ESP-IDF needed).
 CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined
-SRC = test_main.c ../../main/edge_util.c ../../main/edge_dns.c ../../main/mesh/mesh_radio.c ../../main/mesh/mesh_pb.c
+SRC = test_main.c ../../main/edge_util.c ../../main/edge_dns.c ../../main/mesh/mesh_radio.c ../../main/mesh/mesh_pb.c ../../main/mesh/mesh_crypto.c
 INC = -I../../main -I../../main/mesh
 
 build/test: $(SRC) Makefile

@@ -29,8 +29,41 @@
 
 static const char *TAG = "http";
 
-extern const char index_html_start[] asm("_binary_index_html_start");
-extern const char index_html_end[] asm("_binary_index_html_end");
+/* Embedded web assets (see main/CMakeLists.txt). */
+#define ASSET(sym) \
+    extern const uint8_t sym##_start[] asm("_binary_" #sym "_start"); \
+    extern const uint8_t sym##_end[] asm("_binary_" #sym "_end");
+ASSET(index_html_gz)
+ASSET(maplibre_gl_4_7_1_js_gz)
+ASSET(maplibre_gl_4_7_1_css_gz)
+ASSET(uplot_1_6_31_min_js_gz)
+ASSET(uplot_1_6_31_min_css_gz)
+ASSET(satellite_5_0_0_min_js_gz)
+ASSET(geist_regular_woff2)
+ASSET(geist_medium_woff2)
+ASSET(geist_mono_regular_woff2)
+ASSET(instrument_serif_regular_woff2)
+
+typedef struct {
+    const char *path;
+    const uint8_t *start;
+    const uint8_t *end;
+    const char *type;
+    bool gzip;
+} asset_t;
+
+#define A(path, sym, type, gz) {path, sym##_start, sym##_end, type, gz}
+static const asset_t ASSETS[] = {
+    A("/assets/maplibre-gl-4.7.1.js", maplibre_gl_4_7_1_js_gz, "text/javascript", true),
+    A("/assets/maplibre-gl-4.7.1.css", maplibre_gl_4_7_1_css_gz, "text/css", true),
+    A("/assets/uplot-1.6.31.min.js", uplot_1_6_31_min_js_gz, "text/javascript", true),
+    A("/assets/uplot-1.6.31.min.css", uplot_1_6_31_min_css_gz, "text/css", true),
+    A("/assets/satellite-5.0.0.min.js", satellite_5_0_0_min_js_gz, "text/javascript", true),
+    A("/assets/geist-regular.woff2", geist_regular_woff2, "font/woff2", false),
+    A("/assets/geist-medium.woff2", geist_medium_woff2, "font/woff2", false),
+    A("/assets/geist-mono-regular.woff2", geist_mono_regular_woff2, "font/woff2", false),
+    A("/assets/instrument-serif-regular.woff2", instrument_serif_regular_woff2, "font/woff2", false),
+};
 
 #define MAX_SESSIONS    4
 #define MAX_WS          4
@@ -217,10 +250,29 @@ static esp_err_t h_index(httpd_req_t *req)
     common_headers(req);
     httpd_resp_set_hdr(req, "Content-Security-Policy",
                        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-                       "connect-src 'self' ws: wss:; img-src 'self' data:; frame-ancestors 'none'");
+                       "font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: https:; "
+                       "worker-src 'self' blob:; child-src blob:; frame-ancestors 'none'");
     httpd_resp_set_type(req, "text/html; charset=utf-8");
-    return httpd_resp_send(req, index_html_start, index_html_end - index_html_start);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)index_html_gz_start, index_html_gz_end - index_html_gz_start);
 }
+
+/* Versioned file names, so they can be cached for a year. */
+static esp_err_t h_asset(httpd_req_t *req)
+{
+    for (size_t i = 0; i < sizeof(ASSETS) / sizeof(ASSETS[0]); i++) {
+        const asset_t *a = &ASSETS[i];
+        if (strcmp(req->uri, a->path) != 0) continue;
+        httpd_resp_set_type(req, a->type);
+        httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
+        httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+        if (a->gzip) httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+        return httpd_resp_send(req, (const char *)a->start, a->end - a->start);
+    }
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
+    return ESP_FAIL;
+}
+
 
 static esp_err_t h_no_content(httpd_req_t *req)
 {
@@ -255,8 +307,9 @@ static esp_err_t h_login(httpd_req_t *req)
     const cJSON *ms = cJSON_GetObjectItemCaseSensitive(j, "unix_ms");
     if (!edge_time_valid() && cJSON_IsNumber(ms)) {
         edge_time_set_unix_ms((int64_t)ms->valuedouble, "browser");
-        if (edge_time_valid()) edge_record_event(EDGE_EVT_TIME_SET, "browser");
     }
+    const cJSON *tz = cJSON_GetObjectItemCaseSensitive(j, "tz_offset_min");
+    if (cJSON_IsNumber(tz)) edge_time_set_tz_offset_min((int)tz->valuedouble);
     cJSON_Delete(j);
     char tok[TOKEN_LEN + 1];
     new_token(tok);
@@ -484,6 +537,7 @@ static esp_err_t h_ws(httpd_req_t *req)
 
 typedef struct {
     int fd;
+    bool binary;
     size_t len;
     char data[];
 } ws_job_t;
@@ -491,7 +545,8 @@ typedef struct {
 static void ws_send_work(void *arg)
 {
     ws_job_t *j = arg;
-    httpd_ws_frame_t f = {.type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)j->data, .len = j->len, .final = true};
+    httpd_ws_frame_t f = {.type = j->binary ? HTTPD_WS_TYPE_BINARY : HTTPD_WS_TYPE_TEXT,
+                          .payload = (uint8_t *)j->data, .len = j->len, .final = true};
     int fds[MAX_WS];
     xSemaphoreTake(s_lock, portMAX_DELAY);
     memcpy(fds, s_ws_fds, sizeof(fds));
@@ -506,12 +561,13 @@ static void ws_send_work(void *arg)
     free(j);
 }
 
-void edge_http_ws_send(int fd, const char *data, size_t len)
+void edge_http_ws_send(int fd, const char *data, size_t len, bool binary)
 {
     if (!s_server || edge_http_ws_count() == 0) return;
     ws_job_t *j = malloc(sizeof(ws_job_t) + len);
     if (!j) return;
     j->fd = fd;
+    j->binary = binary;
     j->len = len;
     memcpy(j->data, data, len);
     if (httpd_queue_work(s_server, ws_send_work, j) != ESP_OK) free(j);
@@ -544,6 +600,7 @@ esp_err_t edge_http_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
     cfg.max_uri_handlers = 16;
+    cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.close_fn = on_close;
@@ -563,6 +620,7 @@ esp_err_t edge_http_start(void)
         {.uri = "/api/cmd", .method = HTTP_POST, .handler = h_cmd},
         {.uri = "/api/records", .method = HTTP_GET, .handler = h_records},
         {.uri = "/api/ota", .method = HTTP_POST, .handler = h_ota},
+        {.uri = "/assets/*", .method = HTTP_GET, .handler = h_asset},
         {.uri = "/ws", .method = HTTP_GET, .handler = h_ws, .is_websocket = true},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) httpd_register_uri_handler(s_server, &uris[i]);

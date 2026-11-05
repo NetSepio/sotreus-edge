@@ -14,6 +14,7 @@
 
 typedef struct {
     uint8_t sink;
+    bool binary;   /* raw record for WebSocket clients; BLE gets a short JSON notice instead */
     int target;
     size_t len;
     char *line;
@@ -29,14 +30,23 @@ static void events_task(void *arg)
         if (xQueueReceive(s_q, &it, portMAX_DELAY) != pdTRUE) continue;
         switch (it.sink) {
         case EDGE_SINK_ALL:
-            edge_ble_send_line(-1, it.line, it.len);
-            edge_http_ws_send(-1, it.line, it.len);
+            if (it.binary) {
+                const edge_rec_t *r = (const edge_rec_t *)it.line;
+                char note[64];
+                int n = snprintf(note, sizeof(note), "{\"ev\":\"obs\",\"seq\":%lu,\"type\":%u}\n",
+                                 (unsigned long)r->seq, r->type);
+                edge_ble_send_line(-1, note, (size_t)n);
+                edge_http_ws_send(-1, it.line, it.len, true);
+            } else {
+                edge_ble_send_line(-1, it.line, it.len);
+                edge_http_ws_send(-1, it.line, it.len, false);
+            }
             break;
         case EDGE_SINK_BLE:
             edge_ble_send_line(it.target, it.line, it.len);
             break;
         case EDGE_SINK_WS:
-            edge_http_ws_send(it.target, it.line, it.len);
+            edge_http_ws_send(it.target, it.line, it.len, false);
             break;
         case EDGE_SINK_UART:
             printf("@edge %.*s", (int)it.len, it.line);
@@ -90,12 +100,19 @@ void edge_events_publish(const cJSON *ev)
 
 void edge_events_publish_record(const edge_rec_t *rec)
 {
-    if (!edge_events_has_listeners()) return;
-    cJSON *ev = cJSON_CreateObject();
-    cJSON_AddStringToObject(ev, "ev", "obs");
-    cJSON_AddItemToObject(ev, "rec", edge_rec_to_json(rec));
-    enqueue(EDGE_SINK_ALL, -1, ev);
-    cJSON_Delete(ev);
+    /* No JSON on the Edge: browsers decode the 256-byte record themselves. */
+    if (!s_q || !edge_events_has_listeners()) return;
+    char *copy = malloc(sizeof(edge_rec_t));
+    if (!copy) {
+        s_dropped++;
+        return;
+    }
+    memcpy(copy, rec, sizeof(edge_rec_t));
+    ev_item_t it = {.sink = EDGE_SINK_ALL, .binary = true, .target = -1, .len = sizeof(edge_rec_t), .line = copy};
+    if (xQueueSend(s_q, &it, 0) != pdTRUE) {
+        free(copy);
+        s_dropped++;
+    }
 }
 
 void edge_events_send_to(edge_sink_t sink, int target, const cJSON *msg)

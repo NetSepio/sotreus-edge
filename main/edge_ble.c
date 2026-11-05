@@ -23,6 +23,7 @@
 #include "edge_config.h"
 #include "edge_log.h"
 #include "edge_time.h"
+#include "mesh.h"
 #include "sense.h"
 
 static const char *TAG = "ble";
@@ -348,6 +349,7 @@ static void on_disc(const struct ble_gap_disc_desc *d)
     r.len = d->length_data > 31 ? 31 : d->length_data;
     memcpy(r.data, d->data, r.len);
     sense_feed_ble(&r);
+    mesh_pax_seen(false, r.addr); /* paxcounter (Mesh mode, opt-in): counts only */
 }
 
 /* ---- Advertising / pairing ---------------------------------------------------- */

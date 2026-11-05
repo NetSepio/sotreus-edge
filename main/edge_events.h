@@ -21,7 +21,8 @@ void edge_events_init(void);
 /** Broadcasts `ev` (not freed). Cheap no-op when nobody listens. */
 void edge_events_publish(const cJSON *ev);
 
-/** Broadcasts {"ev":"obs","rec":{...}} for a freshly written record. */
+/** Announces a freshly written record: the raw 256 bytes as a binary WebSocket
+ *  frame, and {"ev":"obs","seq":N,"type":T} to BLE clients (who fetch it with sync). */
 void edge_events_publish_record(const edge_rec_t *rec);
 
 /** Sends `msg` (not freed) to one client. */

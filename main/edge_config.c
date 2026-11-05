@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 
 #include "edge_util.h"
+#include "mesh_crypto.h"
 
 static const char *TAG = "config";
 static const char *NS = "edge";
@@ -25,6 +26,30 @@ static void random_text(char *out, size_t len, const char *alphabet)
     for (size_t i = 0; i < len; i++) out[i] = alphabet[esp_random() % n];
     out[len] = '\0';
 }
+
+/* Version 1 layout, kept to migrate older saved settings. */
+typedef struct {
+    char name[12];
+    uint8_t psk[32];
+    uint8_t psk_len;
+} cfg_v1_channel_t;
+
+typedef struct {
+    uint16_t version;
+    uint8_t mode, link_mode;
+    bool ble_scan, ble_active, wifi_scan, wifi_probes, probe_ssid_plain;
+    int8_t rssi_floor;
+    uint16_t close_after_s, max_window_s, display_timeout_s;
+    uint8_t region, preset, hop_limit, rebroadcast;
+    int8_t tx_power;
+    uint16_t channel_num;
+    uint32_t node_num;
+    char long_name[40];
+    char short_name[5];
+    uint32_t nodeinfo_interval_s;
+    uint8_t n_channels;
+    cfg_v1_channel_t channels[4];
+} cfg_v1_t;
 
 static void new_pin(char out[9])
 {
@@ -57,6 +82,64 @@ void edge_config_defaults(edge_config_t *c)
     c->channels[0].name[0] = '\0';
     c->channels[0].psk[0] = 1; /* Meshtastic default key */
     c->channels[0].psk_len = 1;
+    c->channels[0].position_precision = 13; /* about 2.9 km, Meshtastic's default for public channels */
+    edge_mesh_ext_t *x = &c->mx;
+    x->role = EDGE_ROLE_CLIENT;
+    x->pos_mode = EDGE_POS_OFF;
+    x->pos_interval_s = 15 * 60;
+    x->telemetry_interval_s = 30 * 60;
+    x->neighbor_info = false;
+    x->neighbor_interval_s = 6 * 3600;
+    x->notify_mode = 1;
+    x->notify_gpio = -1;
+    x->detect_gpio = -1;
+    x->detect_active_high = true;
+    x->detect_min_interval_s = 45;
+    snprintf(x->detect_name, sizeof(x->detect_name), "Sensor");
+    x->pax_interval_s = 15 * 60;
+    x->serial_rx = x->serial_tx = -1;
+    x->serial_baud = 38400;
+    static const char *const canned[] = {"OK", "On my way", "Need assistance", "All fine here"};
+    x->n_canned = 4;
+    for (int i = 0; i < 4; i++) snprintf(x->canned[i], sizeof(x->canned[i]), "%s", canned[i]);
+    x->tx_enabled = true;
+    x->rx_boosted = true;
+    x->ignore_mqtt = true;
+    x->ok_to_mqtt = false;
+}
+
+static void migrate_v1(const cfg_v1_t *o, edge_config_t *c)
+{
+    edge_config_defaults(c);
+    c->mode = o->mode;
+    c->link_mode = o->link_mode;
+    c->ble_scan = o->ble_scan;
+    c->ble_active = o->ble_active;
+    c->wifi_scan = o->wifi_scan;
+    c->wifi_probes = o->wifi_probes;
+    c->probe_ssid_plain = o->probe_ssid_plain;
+    c->rssi_floor = o->rssi_floor;
+    c->close_after_s = o->close_after_s;
+    c->max_window_s = o->max_window_s;
+    c->display_timeout_s = o->display_timeout_s;
+    c->region = o->region;
+    c->preset = o->preset;
+    c->hop_limit = o->hop_limit;
+    c->rebroadcast = o->rebroadcast == 1 ? EDGE_REBROADCAST_LOCAL_ONLY : o->rebroadcast == 2 ? EDGE_REBROADCAST_NONE : EDGE_REBROADCAST_ALL;
+    c->tx_power = o->tx_power;
+    c->channel_num = o->channel_num;
+    c->node_num = o->node_num;
+    memcpy(c->long_name, o->long_name, sizeof(c->long_name));
+    memcpy(c->short_name, o->short_name, sizeof(c->short_name));
+    c->nodeinfo_interval_s = o->nodeinfo_interval_s;
+    c->n_channels = o->n_channels > 4 ? 4 : o->n_channels;
+    for (int i = 0; i < 4; i++) {
+        memcpy(c->channels[i].name, o->channels[i].name, sizeof(c->channels[i].name));
+        memcpy(c->channels[i].psk, o->channels[i].psk, sizeof(c->channels[i].psk));
+        c->channels[i].psk_len = o->channels[i].psk_len;
+        bool public_key = o->channels[i].psk_len == 1 && o->channels[i].psk[0] == 1;
+        c->channels[i].position_precision = public_key ? 13 : 32;
+    }
 }
 
 static uint32_t random_node_num(void)
@@ -84,6 +167,22 @@ static void clamp(edge_config_t *c)
     if (c->tx_power < 0) c->tx_power = 0;
     if (c->tx_power > 30) c->tx_power = 30;
     if (c->nodeinfo_interval_s && c->nodeinfo_interval_s < 600) c->nodeinfo_interval_s = 600;
+    edge_mesh_ext_t *x = &c->mx;
+    if (x->role > EDGE_ROLE_ROUTER_LATE || x->role == 3) x->role = EDGE_ROLE_CLIENT;
+    if (x->pos_mode > EDGE_POS_CLIENT) x->pos_mode = EDGE_POS_OFF;
+    if (x->pos_interval_s < 60) x->pos_interval_s = 60;
+    if (x->telemetry_interval_s && x->telemetry_interval_s < 300) x->telemetry_interval_s = 300;
+    if (x->neighbor_interval_s < 3600) x->neighbor_interval_s = 3600;
+    if (x->range_test_interval_s && x->range_test_interval_s < 15) x->range_test_interval_s = 15;
+    if (x->notify_mode > 2) x->notify_mode = 1;
+    if (x->detect_min_interval_s < 5) x->detect_min_interval_s = 5;
+    if (x->pax_interval_s < 60) x->pax_interval_s = 60;
+    if (x->serial_baud < 1200 || x->serial_baud > 921600) x->serial_baud = 38400;
+    if (x->n_canned > EDGE_CANNED_MAX) x->n_canned = EDGE_CANNED_MAX;
+    for (int i = 0; i < EDGE_CANNED_MAX; i++) x->canned[i][sizeof(x->canned[i]) - 1] = '\0';
+    x->detect_name[sizeof(x->detect_name) - 1] = '\0';
+    if (x->n_ignore > EDGE_IGNORE_MAX) x->n_ignore = EDGE_IGNORE_MAX;
+    if (x->freq_offset_hz > 1000000 || x->freq_offset_hz < -1000000) x->freq_offset_hz = 0;
     if (c->n_channels < 1) c->n_channels = 1;
     if (c->n_channels > EDGE_MESH_MAX_CHANNELS) c->n_channels = EDGE_MESH_MAX_CHANNELS;
     for (int i = 0; i < EDGE_MESH_MAX_CHANNELS; i++) {
@@ -93,6 +192,7 @@ static void clamp(edge_config_t *c)
             ch->psk_len = 1;
             ch->psk[0] = 1;
         }
+        if (ch->position_precision > 32) ch->position_precision = 32;
     }
     if (c->node_num < 0x10 || c->node_num == 0xffffffffu) c->node_num = random_node_num();
     c->long_name[sizeof(c->long_name) - 1] = '\0';
@@ -183,7 +283,14 @@ esp_err_t edge_config_init(void)
     save_u32("boots", s_id.boot_count);
     save_blob("id", &s_id, sizeof(s_id));
 
-    if (load_blob("cfg", &s_cfg, sizeof(s_cfg)) != ESP_OK || s_cfg.version != EDGE_CONFIG_VERSION) {
+    cfg_v1_t old;
+    if (load_blob("cfg", &s_cfg, sizeof(s_cfg)) == ESP_OK && s_cfg.version == EDGE_CONFIG_VERSION) {
+        /* current */
+    } else if (load_blob("cfg", &old, sizeof(old)) == ESP_OK && old.version == 1) {
+        ESP_LOGI(TAG, "migrating settings from version 1");
+        migrate_v1(&old, &s_cfg);
+        save_blob("cfg", &s_cfg, sizeof(s_cfg));
+    } else {
         ESP_LOGI(TAG, "using default settings");
         bootloader_random_enable();
         edge_config_defaults(&s_cfg);
@@ -298,6 +405,77 @@ esp_err_t edge_wifi_net_remove(const char *ssid)
         }
     }
     xSemaphoreGive(s_lock);
+    return err;
+}
+
+size_t edge_ctx_get(char *out, size_t cap)
+{
+    nvs_handle_t h;
+    if (cap == 0 || nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return 0;
+    size_t len = cap;
+    esp_err_t err = nvs_get_str(h, "ctx", out, &len);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        out[0] = '\0';
+        return 0;
+    }
+    return len ? len - 1 : 0;
+}
+
+esp_err_t edge_ctx_set(const char *json)
+{
+    if (!json || strlen(json) >= EDGE_CTX_MAX) return ESP_ERR_INVALID_SIZE;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "ctx", json);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+bool edge_tz_get(int32_t *minutes)
+{
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_get_i32(h, "tzoff", minutes);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+esp_err_t edge_tz_set(int32_t minutes)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_i32(h, "tzoff", minutes);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t edge_pki_get(uint8_t priv[32], uint8_t pub[32])
+{
+    uint8_t kp[64];
+    if (load_blob("pki", kp, sizeof(kp)) != ESP_OK) {
+        esp_err_t err = edge_pki_regenerate();
+        if (err != ESP_OK) return err;
+        if (load_blob("pki", kp, sizeof(kp)) != ESP_OK) return ESP_FAIL;
+    }
+    memcpy(priv, kp, 32);
+    memcpy(pub, kp + 32, 32);
+    memset(kp, 0, sizeof(kp));
+    return ESP_OK;
+}
+
+esp_err_t edge_pki_regenerate(void)
+{
+    uint8_t kp[64];
+    esp_fill_random(kp, 32);
+    mesh_x25519_clamp(kp);
+    mesh_x25519_public(kp + 32, kp);
+    esp_err_t err = save_blob("pki", kp, sizeof(kp));
+    memset(kp, 0, sizeof(kp));
     return err;
 }
 

@@ -28,6 +28,7 @@ typedef struct {
     int8_t power_dbm;
     uint16_t preamble;
     uint8_t sync_word;
+    bool rx_boosted;
 } sx1262_cfg_t;
 
 /** Sets up SPI/GPIO, resets and probes the radio. DIO1 edges notify `task`. */

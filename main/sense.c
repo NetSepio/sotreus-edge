@@ -21,8 +21,8 @@
 static const char *TAG = "sense";
 
 #define MAX_BLE     128
-#define MAX_AP      64
-#define MAX_PROBE   64
+#define MAX_AP      48
+#define MAX_PROBE   48
 #define QUEUE_LEN   32
 
 typedef enum { ITEM_BLE = 1, ITEM_AP, ITEM_PROBE } item_kind_t;
@@ -50,15 +50,44 @@ typedef struct {
     edge_body_ble_t b;
 } ble_ent_t;
 
+/* Compact in-RAM views; the full record bodies are built when a sighting is written.
+ * Rarely used, large fields (Remote ID elements, probed names in clear) live in small
+ * side tables so every slot does not pay for them. */
 typedef struct {
-    win_t w;
-    edge_body_wifi_ap_t b;
-} ap_ent_t;
+    uint8_t bssid[6];
+    uint8_t channel;
+    uint8_t auth;
+    uint8_t flags;
+    uint8_t ssid_len;
+    uint16_t beacon_itvl;
+    uint8_t ssid[32];
+} ap_core_t;
 
 typedef struct {
     win_t w;
-    edge_body_wifi_probe_t b;
+    ap_core_t b;
+} ap_ent_t;
+
+typedef struct {
+    uint8_t mac[6];
+    uint8_t channel;
+    uint8_t flags;
+    uint8_t n_ssids;
+    uint32_t ssid_hash[EDGE_PROBE_MAX_SSIDS];
+} probe_core_t;
+
+typedef struct {
+    win_t w;
+    probe_core_t b;
 } probe_ent_t;
+
+#define MAX_RID 4
+typedef struct {
+    bool used;
+    uint8_t bssid[6];
+    uint8_t len;
+    uint8_t rid[120];
+} rid_ent_t;
 
 static QueueHandle_t s_q;
 static SemaphoreHandle_t s_lock;
@@ -67,6 +96,8 @@ static volatile bool s_running;
 static ble_ent_t *s_ble;
 static ap_ent_t *s_ap;
 static probe_ent_t *s_probe;
+static rid_ent_t *s_rid;                                     /* MAX_RID entries */
+static edge_ssid_t (*s_plain)[EDGE_PROBE_MAX_SSIDS];          /* MAX_PROBE rows, only when names are kept */
 static edge_config_t s_cfg;
 static sense_stats_t s_st;
 
@@ -150,22 +181,54 @@ static void flush_ble(ble_ent_t *e, uint8_t flags)
     write_record(EDGE_REC_BLE, &e->w, &e->b, sizeof(e->b), flags);
 }
 
+static rid_ent_t *rid_find(const uint8_t bssid[6])
+{
+    for (int i = 0; s_rid && i < MAX_RID; i++) {
+        if (s_rid[i].used && memcmp(s_rid[i].bssid, bssid, 6) == 0) return &s_rid[i];
+    }
+    return NULL;
+}
+
 static void flush_ap(ap_ent_t *e, uint8_t flags)
 {
-    e->b.rssi_last = e->w.rssi_last;
-    e->b.rssi_max = e->w.rssi_max;
-    e->b.rssi_min = e->w.rssi_min;
-    e->b.count = e->w.count;
-    write_record(EDGE_REC_WIFI_AP, &e->w, &e->b, sizeof(e->b), flags);
+    edge_body_wifi_ap_t b;
+    memset(&b, 0, sizeof(b));
+    memcpy(b.bssid, e->b.bssid, 6);
+    b.channel = e->b.channel;
+    b.auth = e->b.auth;
+    b.flags = e->b.flags;
+    b.beacon_itvl = e->b.beacon_itvl;
+    b.ssid_len = e->b.ssid_len;
+    memcpy(b.ssid, e->b.ssid, sizeof(b.ssid));
+    b.rssi_last = e->w.rssi_last;
+    b.rssi_max = e->w.rssi_max;
+    b.rssi_min = e->w.rssi_min;
+    b.count = e->w.count;
+    rid_ent_t *r = rid_find(e->b.bssid);
+    if (r) {
+        b.flags |= EDGE_APF_REMOTE_ID;
+        b.rid_len = r->len;
+        memcpy(b.rid, r->rid, r->len);
+        if (!(flags & EDGE_RECF_CONTINUES)) r->used = false; /* sighting closed */
+    }
+    write_record(EDGE_REC_WIFI_AP, &e->w, &b, sizeof(b), flags);
 }
 
 static void flush_probe(probe_ent_t *e, uint8_t flags)
 {
-    e->b.rssi_last = e->w.rssi_last;
-    e->b.rssi_max = e->w.rssi_max;
-    e->b.rssi_min = e->w.rssi_min;
-    e->b.count = e->w.count;
-    write_record(EDGE_REC_WIFI_PROBE, &e->w, &e->b, sizeof(e->b), flags);
+    edge_body_wifi_probe_t b;
+    memset(&b, 0, sizeof(b));
+    memcpy(b.mac, e->b.mac, 6);
+    b.channel = e->b.channel;
+    b.flags = e->b.flags;
+    b.n_ssids = e->b.n_ssids;
+    memcpy(b.ssid_hash, e->b.ssid_hash, sizeof(b.ssid_hash));
+    b.rssi_last = e->w.rssi_last;
+    b.rssi_max = e->w.rssi_max;
+    b.rssi_min = e->w.rssi_min;
+    b.count = e->w.count;
+    if (s_plain && (e->b.flags & EDGE_PRBF_PLAIN)) memcpy(b.plain, s_plain[e - s_probe], sizeof(b.plain));
+    write_record(EDGE_REC_WIFI_PROBE, &e->w, &b, sizeof(b), flags);
 }
 
 /* Returns a free slot, evicting (and writing) the least recently heard one if full. */
@@ -304,10 +367,16 @@ static void on_ap(const sense_ap_report_t *r, int64_t t)
             }
         }
         if (r->flags & EDGE_APF_PROBE_RESP) e->b.flags |= EDGE_APF_PROBE_RESP;
-        if (r->rid_len) {
-            e->b.flags |= EDGE_APF_REMOTE_ID;
-            e->b.rid_len = r->rid_len;
-            memcpy(e->b.rid, r->rid, r->rid_len > sizeof(e->b.rid) ? sizeof(e->b.rid) : r->rid_len);
+        if (r->rid_len && s_rid) {
+            rid_ent_t *x = rid_find(r->bssid);
+            for (int i = 0; !x && i < MAX_RID; i++) {
+                if (!s_rid[i].used) x = &s_rid[i];
+            }
+            if (!x) x = &s_rid[0]; /* more Remote ID beacons than slots: keep the newest */
+            x->used = true;
+            memcpy(x->bssid, r->bssid, 6);
+            x->len = r->rid_len > sizeof(x->rid) ? sizeof(x->rid) : r->rid_len;
+            memcpy(x->rid, r->rid, x->len);
         }
     }
     if (is_new) {
@@ -336,6 +405,7 @@ static void on_probe(const sense_probe_report_t *r, int64_t t)
         win_open(&e->w, t, r->rssi);
         memcpy(e->b.mac, r->mac, 6);
         if (r->mac[0] & 0x02) e->b.flags |= EDGE_PRBF_RANDOMIZED;
+        if (s_plain) memset(s_plain[e - s_probe], 0, sizeof(s_plain[0]));
         is_new = true;
     } else {
         win_hit(&e->w, t, r->rssi);
@@ -352,10 +422,10 @@ static void on_probe(const sense_probe_report_t *r, int64_t t)
             if (e->b.n_ssids < EDGE_PROBE_MAX_SSIDS) {
                 int k = e->b.n_ssids++;
                 e->b.ssid_hash[k] = h;
-                if (s_cfg.probe_ssid_plain) {
+                if (s_cfg.probe_ssid_plain && s_plain) {
                     e->b.flags |= EDGE_PRBF_PLAIN;
-                    e->b.plain[k].len = r->ssid_len;
-                    memcpy(e->b.plain[k].ssid, r->ssid, r->ssid_len);
+                    s_plain[e - s_probe][k].len = r->ssid_len;
+                    memcpy(s_plain[e - s_probe][k].ssid, r->ssid, r->ssid_len);
                 }
             } else {
                 e->b.flags |= EDGE_PRBF_MORE;
@@ -426,6 +496,10 @@ static void free_tables(void)
     free(s_ble);
     free(s_ap);
     free(s_probe);
+    free(s_rid);
+    free(s_plain);
+    s_rid = NULL;
+    s_plain = NULL;
     s_ble = NULL;
     s_ap = NULL;
     s_probe = NULL;
@@ -438,7 +512,9 @@ static void do_start(void)
     s_ble = calloc(MAX_BLE, sizeof(ble_ent_t));
     s_ap = calloc(MAX_AP, sizeof(ap_ent_t));
     s_probe = calloc(MAX_PROBE, sizeof(probe_ent_t));
-    if (!s_ble || !s_ap || !s_probe) {
+    s_rid = calloc(MAX_RID, sizeof(rid_ent_t));
+    if (s_cfg.probe_ssid_plain) s_plain = calloc(MAX_PROBE, sizeof(s_plain[0]));
+    if (!s_ble || !s_ap || !s_probe || !s_rid) {
         ESP_LOGE(TAG, "not enough memory for sighting tables");
         free_tables();
         return;
@@ -473,6 +549,14 @@ static void sense_task(void *arg)
             if (cmd == CMD_STOP) do_stop();
             if (cmd == CMD_RELOAD && s_running) {
                 edge_config_get(&s_cfg);
+                xSemaphoreTake(s_lock, portMAX_DELAY);
+                if (s_cfg.probe_ssid_plain && !s_plain) s_plain = calloc(MAX_PROBE, sizeof(s_plain[0]));
+                if (!s_cfg.probe_ssid_plain && s_plain) {
+                    free(s_plain);
+                    s_plain = NULL;
+                    for (int i = 0; i < MAX_PROBE; i++) s_probe[i].b.flags &= (uint8_t)~EDGE_PRBF_PLAIN;
+                }
+                xSemaphoreGive(s_lock);
                 apply_radios();
             }
         }

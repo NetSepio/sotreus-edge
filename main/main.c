@@ -83,6 +83,7 @@ static void reboot_cb(void *arg)
 
 void edge_app_reboot_later(uint32_t delay_ms)
 {
+    mesh_save_now(); /* keep the node list and messages across the restart */
     static esp_timer_handle_t t;
     if (!t) {
         esp_timer_create_args_t a = {.callback = reboot_cb, .name = "reboot"};
@@ -119,6 +120,7 @@ void app_main(void)
 
     edge_time_init();
     ESP_ERROR_CHECK(edge_config_init());
+    edge_time_load_tz();
     if (edge_log_init() != ESP_OK) ESP_LOGE(TAG, "record log unavailable");
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -156,6 +158,7 @@ void app_main(void)
             pending = false;
             ESP_LOGI(TAG, "new firmware confirmed");
         }
+        if (edge_time_take_first_set()) edge_record_event(EDGE_EVT_TIME_SET, edge_time_source());
         if (++ticks % 6 == 0) {
             sense_stats_t ss;
             sense_get_stats(&ss);

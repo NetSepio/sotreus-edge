@@ -1,0 +1,8 @@
+name = "sotreus-context-relay"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# No logs of request URLs are kept by the Worker code. Turn Workers Logs off
+# in the dashboard as well if you want Cloudflare to keep none.
+[observability]
+enabled = false

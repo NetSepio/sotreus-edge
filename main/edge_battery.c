@@ -1,5 +1,7 @@
 #include "edge_battery.h"
 
+#include <string.h>
+
 #include "driver/gpio.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -82,12 +84,36 @@ void edge_battery_init(void)
     edge_battery_update();
 }
 
+/* Recent readings: a cell is steady, a charger with no cell behind it wanders. */
+#define HIST 6
+static int s_hist[HIST];
+static int s_hist_n;
+
 void edge_battery_update(void)
 {
     if (!s_adc || s_ctrl_level < 0) return;
-    int mv = read_mv(s_ctrl_level);
+    int lo = 100000, hi = 0, sum = 0;
+    for (int i = 0; i < 4; i++) {
+        int mv = read_mv(s_ctrl_level);
+        if (mv < lo) lo = mv;
+        if (mv > hi) hi = mv;
+        sum += mv;
+        if (i < 3) vTaskDelay(pdMS_TO_TICKS(40));
+    }
+    int mv = sum / 4;
+    memmove(&s_hist[1], &s_hist[0], (HIST - 1) * sizeof(int));
+    s_hist[0] = mv;
+    if (s_hist_n < HIST) s_hist_n++;
+    for (int i = 0; i < s_hist_n; i++) {
+        if (s_hist[i] < lo) lo = s_hist[i];
+        if (s_hist[i] > hi) hi = s_hist[i];
+    }
     s_last.mv = (uint32_t)(mv < 0 ? 0 : mv);
-    s_last.present = mv >= 3000 && mv <= 4500;
+    /* Above 4.25 V no LiPo is connected (the charger stops at 4.2 V); a spread of
+     * more than ~150 mV between readings is the charger output, not a cell. */
+    bool external = hi > 4250 || (hi - lo) > 150;
+    s_last.external = external && mv > 3000;
+    s_last.present = !external && mv >= 3000 && mv <= 4250;
     s_last.percent = s_last.present ? lipo_percent(s_last.mv) : 0;
 }
 

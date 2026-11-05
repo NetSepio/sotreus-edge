@@ -12,13 +12,14 @@
 // PINs lock the login for a minute.
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "esp_err.h"
 
 esp_err_t edge_http_start(void);
 /** Sends a text frame to one WebSocket client (fd >= 0) or every authenticated client (fd < 0). */
-void edge_http_ws_send(int fd, const char *data, size_t len);
+void edge_http_ws_send(int fd, const char *data, size_t len, bool binary);
 int edge_http_ws_count(void);
 /** Drops every session (after a PIN change). */
 void edge_http_logout_all(void);

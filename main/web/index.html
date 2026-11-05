@@ -2,258 +2,499 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0B0E13">
 <title>Sotreus Edge</title>
 <style>
+/* Sotreus "Night Instrument" tokens (design/tokens.json in the app repo). Dark only. */
+@font-face{font-family:"Geist";src:url(/assets/geist-regular.woff2) format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Geist";src:url(/assets/geist-medium.woff2) format("woff2");font-weight:500 700;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url(/assets/geist-mono-regular.woff2) format("woff2");font-weight:400 600;font-display:swap}
+@font-face{font-family:"Instrument Serif";src:url(/assets/instrument-serif-regular.woff2) format("woff2");font-weight:400;font-display:swap}
 :root{
-  --bg:#f6f7f9;--surface:#fff;--surface-2:#eef1f4;--text:#14181f;--muted:#5b6573;--line:#dde2e8;
-  --accent:#2457d6;--accent-ink:#fff;--sensed:#1f7a4d;--network:#7a4fd0;--warn:#a15c00;--danger:#b42318;
-  --radius:12px;--gap:12px;--tap:44px;
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:dark;
+  --ink:#0B0E13;--surface:#0D1117;--raised:#10141B;--high:#121721;--banner:#1A1F28;
+  --line-subtle:#161B23;--line:#1E2530;--line-nav:#1A2029;--line-mid:#232A36;--line-strong:#2F3846;
+  --text:#E9E6DF;--soft:#C9CBCF;--muted:#A3A7AE;--dim:#7C828C;
+  --accent:#F2B33D;--sensed:#F2B33D;--accent-tint:rgba(242,179,61,.12);--accent-pill:rgba(242,179,61,.16);
+  --network:#6CB8F0;--predicted:#B9A6FF;--destructive:#F59A8C;--on-accent:#0B0E13;
+  --attention-surface:#15130E;--attention-line:#3B3220;
+  --r-tile:12px;--r-card:14px;--r-panel:16px;--r-feature:20px;--r-pill:999px;
+  --gap:12px;--screen-h:20px;--tap:44px;
+  --f-body:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --f-display:"Instrument Serif",Georgia,serif;
 }
-@media (prefers-color-scheme:dark){:root{
-  --bg:#0f1216;--surface:#171b21;--surface-2:#1f252d;--text:#e8ecf1;--muted:#9aa5b3;--line:#2a313b;
-  --accent:#7aa2ff;--accent-ink:#0b1020;--sensed:#5cc994;--network:#b79bff;--warn:#e7a54a;--danger:#ff7b72;
-}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-size:15px;line-height:1.45}
-header{position:sticky;top:0;z-index:2;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-header h1{font-size:17px;margin:0;font-weight:600}
-.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;background:var(--surface-2);color:var(--muted)}
-.pill.on{color:var(--sensed)}.pill.net{color:var(--network)}.pill.warn{color:var(--warn)}
-.dot{width:8px;height:8px;border-radius:50%;background:currentColor}
-nav{display:flex;gap:4px;overflow-x:auto;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--line)}
-nav button{flex:0 0 auto}
-main{max-width:920px;margin:0 auto;padding:16px}
-section{display:none}section.active{display:block}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:var(--gap)}
-.card h2{font-size:15px;margin:0 0 10px;font-weight:600}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--gap)}
-.kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)}
-.kv:last-child{border-bottom:0}.kv span:first-child{color:var(--muted)}.kv span:last-child{text-align:right;overflow-wrap:anywhere}
-.note{color:var(--muted);font-size:13px;margin:6px 0 0}
-button,.btn{min-height:var(--tap);padding:0 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font:inherit;cursor:pointer}
-button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-button.danger{color:var(--danger)}
-button[aria-selected=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-button:disabled{opacity:.5;cursor:default}
-input,select,textarea{min-height:var(--tap);width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit}
-textarea{min-height:88px;resize:vertical}
-label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:1 1 140px}
-.check{display:flex;align-items:center;gap:10px;min-height:var(--tap);color:var(--text);font-size:15px;margin:0}
-.check input{width:22px;min-height:22px;flex:0 0 auto}
-.seg{display:flex;gap:6px}.seg button{flex:1}
-.list{list-style:none;margin:0;padding:0}
-.list li{padding:10px 0;border-bottom:1px solid var(--line)}
-.list li:last-child{border-bottom:0}
-.obs-top{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
-.chip{font-size:11px;font-weight:600;letter-spacing:.02em;border-radius:6px;padding:1px 6px;background:var(--surface-2)}
-.chip.sensed{color:var(--sensed)}.chip.network{color:var(--network)}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-.muted{color:var(--muted)}.small{font-size:12px}
-.msg{padding:8px 10px;border-radius:10px;background:var(--surface-2);margin:6px 0}
+html{background:var(--ink)}
+body{margin:0;background:var(--ink);color:var(--text);font:400 15px/1.55 var(--f-body);-webkit-font-smoothing:antialiased}
+a{color:var(--text)}a:hover{color:var(--accent)}
+.label{font:400 11px/1.4 var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.cap{font:400 11.5px/1.5 var(--f-mono);color:var(--muted)}
+.mono{font-family:var(--f-mono);font-size:12px}
+.muted{color:var(--muted)}.dim{color:var(--dim)}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:var(--r-pill);font:400 10px/1.4 var(--f-mono);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;border:1px solid var(--line-mid);color:var(--muted)}
+.chip.sensed{border-color:var(--sensed);color:var(--sensed)}.chip.net{border-color:var(--network);color:var(--network)}.chip.pred{border-color:var(--predicted);color:var(--predicted)}
+.chip.live{border-color:var(--line-strong);color:var(--soft)}.chip .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.stale{color:var(--destructive)}
+/* layout */
+header.top{position:sticky;top:0;z-index:5;background:rgba(11,14,19,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--line-nav);padding:12px var(--screen-h) 0}
+.brand{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.brand h1{margin:0;font:400 28px/1 var(--f-display);flex:1 1 auto}
+nav.tabs{display:flex;gap:22px;overflow-x:auto;scrollbar-width:none;margin-top:10px}
+nav.tabs::-webkit-scrollbar{display:none}
+nav.tabs button,.subtabs button{flex:0 0 auto;min-height:var(--tap);padding:0;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);font:500 14px var(--f-body);cursor:pointer}
+nav.tabs button[aria-selected=true],.subtabs button[aria-selected=true]{color:var(--text);border-bottom-color:var(--accent)}
+.subtabs{display:flex;gap:22px;border-bottom:1px solid var(--line);margin:4px 0 14px;overflow-x:auto}
+main{max-width:980px;margin:0 auto;padding:20px var(--screen-h) 40px}
+section.tab{display:none}section.tab.active{display:block}
+h2.title{margin:0 0 14px;font:400 34px/1.05 var(--f-display)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:var(--gap);margin-bottom:var(--gap)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:14px 16px;margin-bottom:var(--gap)}
+.grid .card{margin-bottom:0}
+.card>.label:first-child,.card-head{margin-bottom:8px}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.kv{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px solid var(--line-subtle);font:400 12px/1.45 var(--f-mono)}
+.kv:last-child{border-bottom:0}.kv span:first-child{color:var(--dim);flex:none}.kv span:last-child{text-align:right;overflow-wrap:anywhere}
+.row{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 0;border-bottom:1px solid var(--line-subtle)}
+.row:last-child{border-bottom:0}.row .t{font-size:15px;font-weight:500}.row .s{font:400 11.5px/1.5 var(--f-mono);color:var(--muted);margin-top:3px}
+.row .grow{flex:1;min-width:0}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.tile{padding:12px;border:1px solid var(--line);border-radius:var(--r-card);background:var(--raised)}
+.tile .v{font-size:22px;font-weight:500;margin-top:2px}.tile .d{font-size:12px;color:var(--muted)}
+.caveat{padding:14px 16px;border:1px dashed var(--line-strong);border-radius:18px;margin-bottom:var(--gap)}
+.caveat p{margin:6px 0 0;font-size:12.5px;line-height:1.5;color:var(--soft)}
+.banner{border:1px solid var(--attention-line);background:var(--attention-surface);border-radius:var(--r-panel);padding:12px 14px;margin-bottom:var(--gap);color:var(--soft);font-size:13px}
+.note{font:400 12px/1.5 var(--f-body);color:var(--muted);margin:8px 0 0}
+/* controls */
+button.btn{min-height:48px;padding:0 18px;border-radius:var(--r-pill);border:1px solid var(--line-strong);background:transparent;color:var(--text);font:500 15px var(--f-body);cursor:pointer}
+button.btn.primary{min-height:52px;background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600;font-size:16px}
+button.btn.danger{color:var(--destructive);border-color:var(--line-mid)}
+button.btn.small{min-height:var(--tap);padding:0 14px;font-size:14px}
+button:disabled{opacity:.45;cursor:default}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+input,select,textarea{width:100%;min-height:var(--tap);padding:9px 12px;border-radius:var(--r-tile);border:1px solid var(--line-mid);background:var(--raised);color:var(--text);font:400 15px var(--f-body)}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+textarea{min-height:96px;resize:vertical}
+label.f{display:block;font:400 11px/1.4 var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:12px 0 6px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:0 10px}
+.sw{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 0;border-bottom:1px solid var(--line-subtle);cursor:pointer;position:relative}
+.sw:last-child{border-bottom:0}.sw .grow{flex:1}.sw .t{font-size:15px;font-weight:500}.sw .cap{margin-top:3px}
+.sw input{position:absolute;opacity:0;width:1px;height:1px}
+.knob{width:44px;height:26px;border-radius:var(--r-pill);position:relative;flex:none;background:var(--line-mid);transition:background .15s}
+.knob::after{content:"";position:absolute;left:3px;top:3px;width:20px;height:20px;border-radius:50%;background:var(--dim);transition:left .15s,background .15s}
+.sw input:checked+.knob{background:var(--accent)}.sw input:checked+.knob::after{left:21px;background:var(--ink)}
+.sw input:focus-visible+.knob{outline:2px solid var(--accent);outline-offset:2px}
+.seg{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);padding:4px;border:1px solid var(--line-mid);border-radius:var(--r-pill);gap:4px;margin:6px 0}
+.seg button{min-height:36px;border:0;border-radius:var(--r-pill);background:transparent;color:var(--muted);font:500 13px var(--f-body);cursor:pointer}
+.seg button[aria-checked=true]{background:var(--text);color:var(--ink)}
+.modecard{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.modecard .big{font:400 40px/1 var(--f-display);flex:1}
+.msg{padding:10px 12px;border-radius:var(--r-card);background:var(--raised);border:1px solid var(--line);margin:8px 0}
 .msg.out{border-left:3px solid var(--accent)}
-.banner{border-radius:10px;padding:10px 12px;background:var(--surface-2);color:var(--warn);margin-bottom:var(--gap)}
-.hidden{display:none!important}
-#login{max-width:380px;margin:12vh auto;padding:0 16px}
-#toast{position:fixed;left:16px;right:16px;bottom:16px;max-width:520px;margin:0 auto;background:var(--text);color:var(--bg);padding:10px 14px;border-radius:10px;opacity:0;transition:opacity .2s;pointer-events:none}
-#toast.show{opacity:1}
-table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:500}
+table{width:100%;border-collapse:collapse;font:400 12px var(--f-mono)}th,td{text-align:left;padding:8px 4px;border-bottom:1px solid var(--line-subtle)}th{color:var(--dim);font-weight:400;letter-spacing:.1em;text-transform:uppercase;font-size:10.5px}
 .tablewrap{overflow-x:auto}
+.list{list-style:none;margin:0;padding:0}
+#login{max-width:400px;margin:12vh auto;padding:0 var(--screen-h)}
+#login h1{font:400 48px/.98 var(--f-display);margin:0 0 8px}
+dialog{border:1px solid var(--line-strong);border-radius:var(--r-feature);background:var(--high);color:var(--text);padding:20px;width:min(92vw,460px)}
+dialog::backdrop{background:rgba(5,7,10,.7)}
+dialog h3{margin:0 0 8px;font:400 30px/1.05 var(--f-display)}
+dialog ul{margin:8px 0;padding-left:18px;color:var(--soft);font-size:14px}
+#toast{position:fixed;left:16px;right:16px;bottom:16px;max-width:520px;margin:0 auto;background:var(--banner);border:1px solid var(--line-strong);color:var(--text);padding:12px 14px;border-radius:var(--r-panel);opacity:0;transition:opacity .2s;pointer-events:none;z-index:20;font-size:14px}
+#toast.show{opacity:1}
+#ctxMap{height:340px;border-radius:var(--r-panel);border:1px solid var(--line);overflow:hidden;background:var(--surface);margin-bottom:10px}
+.maplibregl-ctrl-attrib{background:rgba(11,14,19,.75)!important;color:var(--muted)!important;font:400 10px var(--f-mono)!important}
+.maplibregl-ctrl-attrib a{color:var(--soft)!important}
+.maplibregl-ctrl-group{background:var(--high)!important;border:1px solid var(--line-mid)}
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon{filter:invert(1)}
+.chart{width:100%;margin:6px 0 2px}
+.uplot,.uplot *{font-family:var(--f-mono)!important;color:var(--muted)}
+.u-legend{font-size:11px!important}
+.hidden{display:none!important}
+/* mode- and context-dependent visibility */
+body[data-mode=mesh] .aware-only{display:none!important}
+body[data-mode=awareness] .mesh-only{display:none!important}
+body:not([data-ctx=on]) .ctx-on-only{display:none!important}
+body:not([data-ctx=on]):not([data-ctx=off]) .ctx-avail-only{display:none!important}
+@media (max-width:520px){h2.title{font-size:30px}.brand h1{font-size:24px}#ctxMap{height:280px}}
 </style>
 </head>
-<body>
+<body data-mode="awareness" data-ctx="none">
 
 <div id="login">
-  <div class="card">
-    <h2>Sotreus Edge</h2>
-    <p class="note">Enter the 8-digit setup PIN. Press PRG on the Edge until the ACCESS screen shows it.</p>
-    <p class="note">If this page opened by itself after joining the Edge's Wi-Fi, choose to stay connected without internet when your device asks. Your phone keeps using mobile data for the internet.</p>
-    <label for="pin">Setup PIN</label>
-    <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9]*">
-    <p id="loginErr" class="note" style="color:var(--danger)"></p>
-    <button class="primary" id="loginBtn" style="width:100%">Unlock</button>
-  </div>
+  <div class="label">NetSepio · Sotreus</div>
+  <h1>Sotreus Edge</h1>
+  <p class="note">Enter the 8-digit setup PIN. Short-press PRG on the Edge until the ACCESS screen shows it.</p>
+  <label class="f" for="pin">Setup PIN</label>
+  <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9]*">
+  <p id="loginErr" class="note" style="color:var(--destructive)"></p>
+  <button class="btn primary" id="loginBtn" style="width:100%">Unlock</button>
+  <p class="note">If this page opened by itself after joining the Edge's Wi-Fi, choose to stay connected without internet when your device asks. Your phone keeps using mobile data for the internet.</p>
 </div>
 
 <div id="app" class="hidden">
-<header>
-  <h1 id="title">Sotreus Edge</h1>
-  <span id="modePill" class="pill"><span class="dot"></span><span>-</span></span>
-  <span id="livePill" class="pill"><span class="dot"></span><span>connecting</span></span>
-  <span style="flex:1"></span>
-  <button id="logoutBtn">Lock</button>
+<header class="top">
+  <div class="brand">
+    <h1 id="title">Sotreus Edge</h1>
+    <span id="modeChip" class="chip sensed"><span class="dot"></span><span>Awareness</span></span>
+    <span id="liveChip" class="chip live"><span class="dot"></span><span>connecting</span></span>
+    <button class="btn small" id="logoutBtn">Lock</button>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button data-tab="overview" aria-selected="true">Overview</button>
+    <button data-tab="obs" class="aware-only">Observations</button>
+    <button data-tab="mesh" class="mesh-only">Mesh</button>
+    <button data-tab="context" class="ctx-on-only">Context</button>
+    <button data-tab="wifi">Wi-Fi</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
 </header>
-<nav role="tablist">
-  <button data-tab="overview" aria-selected="true">Overview</button>
-  <button data-tab="obs">Observations</button>
-  <button data-tab="mesh">Mesh</button>
-  <button data-tab="wifi">Wi-Fi</button>
-  <button data-tab="settings">Settings</button>
-</nav>
 <main>
 
-<section id="tab-overview" class="active">
+<section id="tab-overview" class="tab active">
   <div class="card">
-    <h2>Mode</h2>
-    <div class="seg" id="modeSeg">
-      <button data-mode="awareness">Awareness</button>
-      <button data-mode="mesh">Mesh</button>
+    <div class="card-head"><span class="label">Mode</span><span id="modeChip2" class="chip"></span></div>
+    <div class="modecard">
+      <div class="big" id="modeName">Awareness</div>
+      <button class="btn" id="modeSwitchBtn">Switch to Mesh</button>
     </div>
     <p class="note" id="modeNote"></p>
   </div>
   <div class="grid">
-    <div class="card"><h2>Device</h2><div id="devKv"></div></div>
-    <div class="card"><h2>Links</h2><div id="linkKv"></div>
-      <div class="row" style="margin-top:8px"><button id="pairBtn">Open Bluetooth pairing (2 min)</button></div></div>
-    <div class="card"><h2>Awareness</h2><div id="awKv"></div></div>
-    <div class="card"><h2>Records on the Edge</h2><div id="logKv"></div></div>
+    <div class="card"><div class="label">Device</div><div id="devKv"></div></div>
+    <div class="card"><div class="label">Links</div><div id="linkKv"></div>
+      <div class="actions"><button class="btn small" id="pairBtn">Open Bluetooth pairing</button></div></div>
+    <div class="card aware-only"><div class="card-head"><span class="label">Awareness</span><span class="chip sensed">Sensed</span></div><div id="awKv"></div></div>
+    <div class="card mesh-only"><div class="card-head"><span class="label">LoRa mesh</span><span class="chip net">Network</span></div><div id="meshKv"></div></div>
+    <div class="card"><div class="label">Records on the Edge</div><div id="logKv"></div></div>
   </div>
 </section>
 
-<section id="tab-obs">
-  <div class="card">
-    <div class="row">
-      <button id="loadRecent">Load recent records</button>
-      <button id="downloadAll">Download all (NDJSON)</button>
-      <button id="clearView">Clear view</button>
-    </div>
-    <p class="note">Everything here was sensed by this Edge and stays on it until a paired phone syncs it. Signal strength shows how loud a device was here, not how far away it is or in which direction.</p>
+<section id="tab-obs" class="tab">
+  <h2 class="title">Observations</h2>
+  <div class="actions" style="margin:0 0 12px">
+    <button class="btn small" id="loadRecent">Load recent records</button>
+    <button class="btn small" id="downloadAll">Download all (NDJSON)</button>
+    <button class="btn small" id="clearView">Clear view</button>
   </div>
-  <div class="card"><h2>Latest</h2><ul class="list" id="obsList"><li class="muted">Waiting for new records. A sighting is written when a device goes quiet, or every few minutes while it is still heard.</li></ul></div>
+  <div class="caveat"><span class="label">Sensed by this Edge</span>
+    <p>Records stay on the Edge until a paired phone syncs them. Signal strength shows how loud a device was here, not how far away it is or in which direction.</p></div>
+  <div class="card"><div class="label">Latest</div><ul class="list" id="obsList"><li class="cap">Waiting for new records. A sighting is written when a device goes quiet, or every few minutes while it is still heard.</li></ul></div>
 </section>
 
-<section id="tab-mesh">
+<section id="tab-mesh" class="tab">
+  <h2 class="title">Mesh</h2>
   <div id="meshBanner" class="banner hidden"></div>
   <div class="card">
-    <h2>Send a message</h2>
-    <div class="row">
-      <div><label for="msgTo">To</label><select id="msgTo"><option value="broadcast">Everyone on the channel</option></select></div>
-      <div><label for="msgCh">Channel</label><select id="msgCh"><option value="0">0</option></select></div>
+    <div class="label">Send a message</div>
+    <div class="fields">
+      <div><label class="f" for="msgTo">To</label><select id="msgTo"><option value="broadcast">Everyone on the channel</option></select></div>
+      <div><label class="f" for="msgCh">Channel</label><select id="msgCh"><option value="0">0 primary</option></select></div>
     </div>
-    <label for="msgText">Message <span id="msgCount" class="small"></span></label>
+    <div class="card-head hidden" id="replyLine" style="margin:10px 0 0"><span class="cap" id="replyText"></span><button class="btn small" id="replyCancel">Cancel reply</button></div>
+    <label class="f" for="msgText">Message <span id="msgCount"></span></label>
     <textarea id="msgText" maxlength="200"></textarea>
-    <div class="row" style="margin-top:8px"><button class="primary" id="msgSend">Send over LoRa</button></div>
-    <p class="note">Messages go out on the Meshtastic-compatible channel set in Settings. Direct messages ask for an acknowledgement; channel messages report when a neighbour relays them.</p>
+    <div class="actions"><button class="btn primary" id="msgSend">Send over LoRa</button></div>
+    <div class="actions" id="cannedRow" aria-label="Quick messages"></div>
+    <p class="note">Direct messages ask for an acknowledgement and are end-to-end encrypted ("private") once both nodes have each other's key. Channel messages report when a neighbour relays them.</p>
   </div>
-  <div class="card"><h2>Messages</h2><div id="msgList"><p class="muted">No messages yet.</p></div></div>
-  <div class="card"><h2>Nodes heard</h2>
-    <div class="tablewrap"><table><thead><tr><th>Name</th><th>ID</th><th>Last heard</th><th>Hops</th><th>Signal</th></tr></thead><tbody id="nodeRows"></tbody></table></div>
-    <p class="note">Positions, if any, are reported by the nodes themselves over the mesh (network data), not measured by this Edge.</p>
+  <div class="card"><div class="card-head"><span class="label">Messages</span><span class="chip net">Network</span></div><div id="msgList"><p class="cap">No messages yet.</p></div>
+    <div class="actions"><button class="btn small" id="sfAsk">Ask for missed messages</button></div>
+    <p class="cap" id="sfNote"></p></div>
+  <div class="card"><div class="card-head"><span class="label">Nodes heard</span><span class="chip net">Network</span></div>
+    <ul class="list" id="nodeList"></ul>
+    <p class="note">Positions, if any, are reported by the nodes themselves over the mesh, not measured by this Edge. Signal figures describe the last packet's reception only.</p></div>
+  <div class="card hidden" id="traceCard"><div class="card-head"><span class="label">Route checks</span><span class="chip net">Network</span></div><div id="traceList"></div>
+    <p class="note">Each step is a node that relayed the request, with the signal-to-noise ratio it received it at. It describes radio links, not distance or direction.</p></div>
+  <div class="card"><div class="card-head"><span class="label">Waypoints</span><span class="chip net">Network</span></div>
+    <ul class="list" id="wpList"></ul>
+    <span class="label" style="display:block;margin-top:14px">Share a waypoint</span>
+    <div class="fields">
+      <div><label class="f" for="wpName">Name</label><input id="wpName" maxlength="29"></div>
+      <div><label class="f" for="wpDesc">Description</label><input id="wpDesc" maxlength="99"></div>
+      <div><label class="f" for="wpLat">Latitude</label><input id="wpLat" type="number" step="0.00001" min="-90" max="90"></div>
+      <div><label class="f" for="wpLon">Longitude</label><input id="wpLon" type="number" step="0.00001" min="-180" max="180"></div>
+      <div><label class="f" for="wpHours">Expires after (hours, 0 = never)</label><input id="wpHours" type="number" min="0" max="8760" value="24"></div>
+    </div>
+    <div class="actions"><button class="btn small" id="wpSend">Share waypoint</button></div>
+    <p class="note">A waypoint goes to everyone on the channel picked above, with the coordinates exactly as typed.</p></div>
+  <div class="card"><div class="card-head"><span class="label">This node</span></div><div id="meshSelfKv"></div></div>
+  <div class="card"><div class="card-head"><span class="label">Channel link</span></div>
+    <p class="mono" id="chanUrl" style="overflow-wrap:anywhere;margin:6px 0 0">-</p>
+    <div class="actions"><button class="btn small" id="chanCopy">Copy link</button></div>
+    <p class="note">The link holds the channel names and keys and the LoRa settings, in the Meshtastic format. Anyone with it can read and send on these channels.</p>
+    <label class="f" for="chanImportUrl">Use a channel link</label>
+    <input id="chanImportUrl" class="mono" placeholder="https://meshtastic.org/e/#..." autocomplete="off">
+    <div class="actions"><button class="btn small" id="chanAddBtn">Add its channels</button><button class="btn small danger" id="chanReplaceBtn">Replace all channels</button></div>
   </div>
 </section>
 
-<section id="tab-wifi">
+<section id="tab-context" class="tab">
+  <div class="card-head"><h2 class="title" style="margin:0">Context</h2><button class="btn small" id="ctxSourcesBtn">Sources</button></div>
+  <p class="cap" id="ctxAreaLine" style="margin:6px 0 10px"></p>
+  <div id="ctxMap" role="region" aria-label="Context map"></div>
+  <div class="actions" style="margin:0 0 6px">
+    <button class="btn small" id="ctxPickBtn">Set area on map</button>
+    <button class="btn small" id="ctxIpBtn">Use approximate area</button>
+    <button class="btn small" id="ctxRefreshBtn">Refresh now</button>
+  </div>
+  <p class="cap" id="ctxPickHint"></p>
+  <div class="subtabs" role="tablist" aria-label="Context">
+    <button data-sub="env" aria-selected="true">Environment</button>
+    <button data-sub="planes">Aircraft</button>
+    <button data-sub="sat">Satellites</button>
+  </div>
+  <div id="sub-env" class="sub">
+    <div id="envAir"></div>
+    <div id="envQuakes"></div>
+    <div id="envHazards"></div>
+    <div id="envGdacs"></div>
+    <div id="envWarnings"></div>
+    <div class="caveat"><span class="label">Not an official warning</span>
+      <p>These are public feeds. Your phone's emergency alerts and local authorities remain the source for warnings. Overlap in time is not a cause.</p></div>
+  </div>
+  <div id="sub-planes" class="sub hidden">
+    <div id="planesBody"></div>
+    <div class="caveat"><span class="label">Broadcast by the aircraft</span>
+      <p>Each position is what the aircraft's own transponder broadcast, collected by volunteer receivers. Not every aircraft broadcasts, and the list runs up to a minute behind. An aircraft listed at the same time as something else is not linked to it.</p></div>
+  </div>
+  <div id="sub-sat" class="sub hidden">
+    <div id="satBody"></div>
+    <div class="caveat"><span class="label">Predicted, not observed</span>
+      <p>A satellite predicted overhead means only that its orbit passes over this area at that time. It does not mean the satellite imaged or observed anything here.</p></div>
+  </div>
+</section>
+
+<section id="tab-wifi" class="tab">
+  <h2 class="title">Wi-Fi</h2>
   <div class="card">
-    <h2>Link</h2>
-    <label for="linkMode">How the Edge uses Wi-Fi</label>
+    <div class="label">Link</div>
+    <label class="f" for="linkMode">How the Edge uses Wi-Fi</label>
     <select id="linkMode">
       <option value="auto">Join a known network, otherwise run its own access point</option>
       <option value="ap">Always run its own access point</option>
       <option value="sta">Only join known networks</option>
-      <option value="off">Off (Bluetooth only, Wi-Fi radio only listens)</option>
+      <option value="off">Off (Bluetooth only, the Wi-Fi radio only listens)</option>
     </select>
-    <div class="row" style="margin-top:8px"><button class="primary" id="linkSave">Save link mode</button></div>
+    <div class="actions"><button class="btn" id="linkSave">Save link mode</button></div>
     <div id="apKv" style="margin-top:10px"></div>
   </div>
+  <div class="card"><div class="label">Known networks</div><ul class="list" id="knownList"></ul></div>
   <div class="card">
-    <h2>Known networks</h2>
-    <ul class="list" id="knownList"></ul>
-  </div>
-  <div class="card">
-    <h2>Nearby networks</h2>
-    <div class="row"><button id="netScan">Scan nearby</button></div>
-    <p class="note" id="scanNote">Networks the Edge has heard in the last few minutes. Tap one to fill in its name.</p>
+    <div class="card-head"><span class="label">Nearby networks</span><button class="btn small" id="netScan">Scan nearby</button></div>
+    <p class="cap" id="scanNote">Networks the Edge has heard in the last few minutes. Tap one to fill in its name.</p>
     <ul class="list" id="nearList"></ul>
   </div>
   <div class="card">
-    <h2>Add a network</h2>
-    <label for="netSsid">Network name</label>
-    <input id="netSsid" list="nearby" autocomplete="off"><datalist id="nearby"></datalist>
-    <label for="netPass">Password (empty for an open network)</label>
+    <div class="label">Add a network</div>
+    <label class="f" for="netSsid">Network name</label>
+    <input id="netSsid" autocomplete="off" autocapitalize="off">
+    <label class="f" for="netPass">Password (empty for an open network)</label>
     <input id="netPass" type="password" autocomplete="off">
-    <div class="row" style="margin-top:8px"><button class="primary" id="netAdd">Add network</button></div>
+    <div class="actions"><button class="btn primary" id="netAdd">Add network</button></div>
     <p class="note">Network passwords are stored on the Edge only.</p>
   </div>
 </section>
 
-<section id="tab-settings">
-  <div class="card">
-    <h2>Awareness</h2>
-    <label class="check"><input type="checkbox" id="sBle"> Bluetooth LE advertisers</label>
-    <label class="check"><input type="checkbox" id="sBleActive"> Ask advertisers for scan responses (names)</label>
-    <label class="check"><input type="checkbox" id="sAps"> Wi-Fi access points</label>
-    <label class="check"><input type="checkbox" id="sProbes"> Wi-Fi probe requests from nearby devices</label>
-    <label class="check"><input type="checkbox" id="sProbeNames"> Keep probed network names in clear (off keeps a salted hash)</label>
-    <div class="row">
-      <div><label for="sFloor">Ignore weaker than (dBm)</label><input id="sFloor" type="number" min="-127" max="-20"></div>
-      <div><label for="sClose">Close a sighting after quiet (s)</label><input id="sClose" type="number" min="10" max="3600"></div>
-      <div><label for="sWin">Write at least every (s)</label><input id="sWin" type="number" min="10" max="3600"></div>
+<section id="tab-settings" class="tab">
+  <h2 class="title">Settings</h2>
+  <div class="card aware-only">
+    <div class="label">Awareness</div>
+    <label class="sw"><span class="grow"><span class="t">Bluetooth LE advertisers</span></span><input type="checkbox" id="sBle"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Ask for scan responses</span><div class="cap">Gets device names; the Edge sends scan requests from a rotating address.</div></span><input type="checkbox" id="sBleActive"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Wi-Fi access points</span></span><input type="checkbox" id="sAps"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Wi-Fi probe requests</span><div class="cap">Nearby phones and laptops asking for networks they know.</div></span><input type="checkbox" id="sProbes"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Keep probed network names in clear</span><div class="cap">Off keeps only a salted hash of each name.</div></span><input type="checkbox" id="sProbeNames"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="sFloor">Ignore weaker than (dBm)</label><input id="sFloor" type="number" min="-127" max="-20"></div>
+      <div><label class="f" for="sClose">Close a sighting after quiet (s)</label><input id="sClose" type="number" min="10" max="3600"></div>
+      <div><label class="f" for="sWin">Write at least every (s)</label><input id="sWin" type="number" min="10" max="3600"></div>
     </div>
-    <label for="sDisp">Display turns off after (s, 0 = never)</label><input id="sDisp" type="number" min="0" max="3600">
   </div>
-  <div class="card">
-    <h2>LoRa mesh</h2>
-    <div class="row">
-      <div><label for="mRegion">Region</label><select id="mRegion"></select></div>
-      <div><label for="mPreset">Modem preset</label><select id="mPreset"></select></div>
+  <div class="card mesh-only">
+    <div class="label">LoRa mesh</div>
+    <div class="fields">
+      <div><label class="f" for="mRegion">Region</label><select id="mRegion"></select></div>
+      <div><label class="f" for="mPreset">Modem preset</label><select id="mPreset"></select></div>
+      <div><label class="f" for="mLong">Long name</label><input id="mLong" maxlength="39"></div>
+      <div><label class="f" for="mShort">Short name</label><input id="mShort" maxlength="4"></div>
+      <div><label class="f" for="mRole">Role</label><select id="mRole">
+        <option value="CLIENT">Client</option><option value="CLIENT_MUTE">Client, does not relay</option><option value="CLIENT_HIDDEN">Hidden client</option>
+        <option value="ROUTER">Router</option><option value="ROUTER_LATE">Router, relays last</option><option value="REPEATER">Repeater</option>
+        <option value="TRACKER">Position beacon</option><option value="TAK_TRACKER">TAK position beacon</option><option value="TAK">TAK</option>
+        <option value="SENSOR">Sensor</option><option value="LOST_AND_FOUND">Lost and found</option></select></div>
+      <div><label class="f" for="mRebroadcast">Relay</label><select id="mRebroadcast">
+        <option value="all">Relay all packets</option><option value="all_skip_decoding">Relay all, without decoding</option><option value="local_only">Only my channels</option>
+        <option value="known_only">Only nodes already heard</option><option value="core_portnums_only">Only standard packet types</option><option value="none">Do not relay</option></select></div>
+      <div><label class="f" for="mHops">Hop limit</label><input id="mHops" type="number" min="1" max="7"></div>
+      <div><label class="f" for="mPower">Transmit power dBm (0 = region limit)</label><input id="mPower" type="number" min="0" max="30"></div>
+      <div><label class="f" for="mNodeInfo">Node info every (s)</label><input id="mNodeInfo" type="number" min="0" max="86400"></div>
     </div>
-    <div class="row">
-      <div><label for="mLong">Long name</label><input id="mLong" maxlength="39"></div>
-      <div><label for="mShort">Short name</label><input id="mShort" maxlength="4"></div>
-    </div>
-    <div class="row">
-      <div><label for="mHops">Hop limit</label><input id="mHops" type="number" min="1" max="7"></div>
-      <div><label for="mPower">Transmit power dBm (0 = region limit)</label><input id="mPower" type="number" min="0" max="30"></div>
-      <div><label for="mRebroadcast">Relay</label><select id="mRebroadcast">
-        <option value="all">Relay all packets</option><option value="local_only">Only my channels</option><option value="none">Do not relay</option></select></div>
-    </div>
-    <label>Channels (name up to 11 characters; key: default, none, simpleN or base64:...)</label>
+    <p class="cap">Routers and repeaters relay for everyone and should sit somewhere high with steady power. Position beacons send their position more often than other roles.</p>
+    <label class="f">Channels · name up to 11 characters · key: default, none, simpleN or base64:… · position precision</label>
     <div id="chanRows"></div>
-    <div class="row" style="margin-top:8px"><button id="chanAdd">Add channel</button></div>
+    <div class="actions"><button class="btn small" id="chanAdd">Add channel</button></div>
     <p class="note" id="nodeIdNote"></p>
   </div>
-  <div class="row" style="margin-bottom:var(--gap)"><button class="primary" id="saveSettings">Save settings</button></div>
-  <div class="card">
-    <h2>Maintenance</h2>
-    <div class="row">
-      <button id="newPin">New setup PIN</button>
-      <button id="newNode">New mesh identity</button>
-      <button id="reboot">Restart</button>
+  <div class="card mesh-only">
+    <div class="label">Position and telemetry</div>
+    <div class="seg" role="radiogroup" aria-label="Position source" id="mPosMode"><button data-v="off">Off</button><button data-v="fixed">Fixed</button><button data-v="client">From the app</button></div>
+    <p class="cap" id="mPosNote"></p>
+    <div class="fields">
+      <div><label class="f" for="mPosLat">Latitude</label><input id="mPosLat" type="number" step="0.00001" min="-90" max="90"></div>
+      <div><label class="f" for="mPosLon">Longitude</label><input id="mPosLon" type="number" step="0.00001" min="-180" max="180"></div>
+      <div><label class="f" for="mPosAlt">Altitude (m)</label><input id="mPosAlt" type="number" min="-500" max="10000"></div>
+      <div><label class="f" for="mPosInt">Send position every (s)</label><input id="mPosInt" type="number" min="0" max="86400"></div>
+      <div><label class="f" for="mTelInt">Device telemetry every (s, 0 = off)</label><input id="mTelInt" type="number" min="0" max="86400"></div>
     </div>
-    <div class="row" style="margin-top:8px">
-      <button class="danger" id="eraseLog">Erase all records</button>
-      <button class="danger" id="forget">Forget paired phones</button>
-      <button class="danger" id="factory">Factory reset</button>
+    <p class="cap">The Edge has no GNSS. Each channel sends the position rounded to its precision; channels set to Off never get it.</p>
+  </div>
+  <div class="card mesh-only">
+    <div class="label">Mesh modules</div>
+    <label class="sw"><span class="grow"><span class="t">Neighbour info</span><div class="cap">Tells nodes one hop away which nodes this Edge hears directly, and how well.</div></span><input type="checkbox" id="mNb"><span class="knob"></span></label>
+    <div class="fields"><div><label class="f" for="mNbInt">Neighbour info every (s)</label><input id="mNbInt" type="number" min="0" max="86400"></div>
+      <div><label class="f" for="mRange">Range test packet every (s, 0 = off)</label><input id="mRange" type="number" min="0" max="86400"></div></div>
+    <label class="sw"><span class="grow"><span class="t">Paxcounter</span><div class="cap">Counts distinct Bluetooth and Wi-Fi addresses heard nearby and sends only the two counts. Addresses are not kept or sent.</div></span><input type="checkbox" id="mPax"><span class="knob"></span></label>
+    <div class="fields"><div><label class="f" for="mPaxInt">Send counts every (s)</label><input id="mPaxInt" type="number" min="60" max="86400"></div></div>
+    <label class="sw"><span class="grow"><span class="t">Detection sensor</span><div class="cap">Sends a channel message when a contact on a GPIO pin changes.</div></span><input type="checkbox" id="mDet"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="mDetName">Sensor name</label><input id="mDetName" maxlength="19"></div>
+      <div><label class="f" for="mDetGpio">GPIO (-1 = none)</label><input id="mDetGpio" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mDetMin">At most once every (s)</label><input id="mDetMin" type="number" min="0" max="3600"></div>
+    </div>
+    <label class="sw"><span class="grow"><span class="t">Triggered when the pin is high</span></span><input type="checkbox" id="mDetHigh"><span class="knob"></span></label>
+    <label class="f" for="mNotify">External notification</label>
+    <select id="mNotify"><option value="off">Off</option><option value="message">On every message</option><option value="bell">Only on a bell character</option></select>
+    <div class="fields"><div><label class="f" for="mNotifyGpio">Output GPIO (-1 = on-board LED only)</label><input id="mNotifyGpio" type="number" min="-1" max="48"></div></div>
+    <label class="sw"><span class="grow"><span class="t">Serial text bridge</span><div class="cap">Lines typed on a second UART go out as channel messages; received messages are written back.</div></span><input type="checkbox" id="mSer"><span class="knob"></span></label>
+    <div class="fields">
+      <div><label class="f" for="mSerRx">RX GPIO</label><input id="mSerRx" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mSerTx">TX GPIO</label><input id="mSerTx" type="number" min="-1" max="48"></div>
+      <div><label class="f" for="mSerBaud">Baud</label><input id="mSerBaud" type="number" min="1200" max="921600"></div>
+    </div>
+    <label class="f" for="mCanned">Quick messages · one per line, up to 8, 39 bytes each</label>
+    <textarea id="mCanned" rows="4"></textarea>
+    <p class="cap">Also on the Edge: on the LoRa screen, double-press the button to pick one, hold it to send on the primary channel.</p>
+  </div>
+  <div class="card mesh-only">
+    <div class="label">Advanced radio</div>
+    <div class="fields">
+      <div><label class="f" for="mFreqOff">Frequency correction (Hz)</label><input id="mFreqOff" type="number" min="-100000" max="100000"></div>
+      <div><label class="f" for="mFreqOver">Override frequency (MHz, 0 = from channel)</label><input id="mFreqOver" type="number" step="0.001" min="0" max="1000"></div>
+    </div>
+    <label class="sw"><span class="grow"><span class="t">Transmit</span><div class="cap">Off makes the Edge listen only.</div></span><input type="checkbox" id="mTx"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Boosted receive gain</span><div class="cap">Slightly better reception for about 2 mA more.</div></span><input type="checkbox" id="mRxBoost"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Ignore the region's duty-cycle limit</span><div class="cap">Only where your licence allows it. The Edge still waits for a quieter channel.</div></span><input type="checkbox" id="mDuty"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Ignore packets that came through MQTT</span></span><input type="checkbox" id="mIgnMqtt"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">OK to upload my packets to MQTT</span><div class="cap">A flag other nodes' gateways read. This Edge itself never connects to MQTT.</div></span><input type="checkbox" id="mOkMqtt"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Licensed amateur radio operator</span><div class="cap">Turns off encryption on every channel and allows higher power. Set the long name to your call sign.</div></span><input type="checkbox" id="mLicensed"><span class="knob"></span></label>
+    <label class="f">Ignored nodes</label>
+    <ul class="list" id="ignoreList"></ul>
+  </div>
+  <div class="card">
+    <div class="label">Display</div>
+    <label class="f" for="sDisp">Display turns off after (s, 0 = never)</label><input id="sDisp" type="number" min="0" max="3600">
+  </div>
+  <div class="actions" style="margin:0 0 var(--gap)"><button class="btn primary" id="saveSettings">Save settings</button></div>
+
+  <div class="card ctx-avail-only" id="ctxSettings">
+    <div class="card-head"><span class="label">Context sources</span><span class="cap">Saved on the Edge</span></div>
+    <label class="sw"><span class="grow"><span class="t">Context</span><div class="cap">Master switch. Off means this page makes no context requests at all.</div></span><input type="checkbox" id="cEnabled"><span class="knob"></span></label>
+    <label class="f">Area</label>
+    <div class="fields">
+      <div><input id="cLat" type="number" step="0.1" min="-90" max="90" placeholder="Latitude" aria-label="Latitude"></div>
+      <div><input id="cLon" type="number" step="0.1" min="-180" max="180" placeholder="Longitude" aria-label="Longitude"></div>
+    </div>
+    <div class="actions"><button class="btn small" id="cIpArea">Use approximate area</button><button class="btn small hidden" id="cGeoArea">Use this device's location</button></div>
+    <p class="cap">Stored rounded to 0.1° (about 11 km). The Edge has no GNSS. Type the area, set it on the Context map, or use the approximate area: that asks GeoJS where your internet address is registered, which is usually right to the city and sometimes far off. This page can read the device's own location only when opened over HTTPS.</p>
+    <label class="f" for="cRelay">Relay for sources that block web pages</label>
+    <input id="cRelay" class="mono" type="url" inputmode="url" placeholder="https://… (empty = off)" autocomplete="off">
+    <p class="cap">Aircraft, GDACS and MeteoAlarm do not let a web page read them directly. With a relay set, this browser asks the relay instead; it sees a 0.5° grid point for aircraft and the country for MeteoAlarm. The relay is a small Cloudflare Worker you can run yourself: tools/context-relay in the firmware source.</p>
+    <span class="label" style="display:block;margin-top:16px">Satellites</span>
+    <label class="sw"><span class="grow"><span class="t">Satellite passes</span><div class="cap">Downloads orbit elements from CelesTrak and predicts passes in this browser.</div></span><input type="checkbox" id="cSat"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Earth observation</span></span><input type="checkbox" id="cSatResource"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Weather</span></span><input type="checkbox" id="cSatWeather"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Space stations</span></span><input type="checkbox" id="cSatStations"><span class="knob"></span></label>
+    <span class="label" style="display:block;margin-top:16px">Environment</span>
+    <label class="sw"><span class="grow"><span class="t">Earthquakes</span><div class="cap">Downloads the USGS list for the whole world and keeps nearby ones in this browser.</div></span><input type="checkbox" id="cQuakes"><span class="knob"></span></label>
+    <div class="seg" role="radiogroup" aria-label="Earthquake radius" id="cQuakeRadius"><button data-v="100">100 km</button><button data-v="300">300 km</button><button data-v="1000">1000 km</button></div>
+    <label class="sw"><span class="grow"><span class="t">Natural events</span><div class="cap">Downloads NASA EONET's list of open events (wildfires, severe storms, volcanoes, floods, landslides) for the whole world and keeps nearby ones in this browser.</div></span><input type="checkbox" id="cHazards"><span class="knob"></span></label>
+    <span class="t" style="display:block;font-weight:500;margin-top:10px">Air quality</span>
+    <div class="seg" role="radiogroup" aria-label="Air quality" id="cAirQ"><button data-v="off">Off</button><button data-v="coarse">Coarse</button><button data-v="fine">Fine</button></div>
+    <p class="cap">Coarse sends the centre of a 0.5° cell (about 55 km across) to Open-Meteo. Fine sends a 0.1° cell (about 11 km).</p>
+    <label class="sw"><span class="grow"><span class="t">Disaster alerts</span><div class="cap">GDACS's world list of earthquakes, cyclones, floods, volcanoes, wildfires and droughts, kept nearby in this browser. Needs the relay.</div></span><input type="checkbox" id="cGdacs"><span class="knob"></span></label>
+    <label class="sw"><span class="grow"><span class="t">Official warnings</span><div class="cap">Copies of National Weather Service (United States) or MeteoAlarm (Europe, needs the relay) warnings, in the issuer's words. Only the state or country you pick is sent.</div></span><input type="checkbox" id="cWarn"><span class="knob"></span></label>
+    <label class="f" for="cWarnRegion">Warnings region</label>
+    <select id="cWarnRegion"></select>
+    <span class="label" style="display:block;margin-top:16px">Aircraft</span>
+    <label class="sw"><span class="grow"><span class="t">Aircraft nearby</span><div class="cap">Positions aircraft broadcast (ADS-B), from adsb.lol, refreshed every minute while the Aircraft view is open. Needs the relay.</div></span><input type="checkbox" id="cPlanes"><span class="knob"></span></label>
+    <div class="seg" role="radiogroup" aria-label="Aircraft radius" id="cPlaneRadius"><button data-v="25">25 km</button><button data-v="50">50 km</button><button data-v="100">100 km</button></div>
+    <div class="card" style="margin:14px 0 0;background:var(--raised)">
+      <span class="label">What leaves this browser</span>
+      <div id="cLeaves" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Maintenance</div>
+    <div class="actions">
+      <button class="btn small" id="newPin">New setup PIN</button>
+      <button class="btn small mesh-only" id="newNode">New mesh identity</button>
+      <button class="btn small" id="reboot">Restart</button>
+    </div>
+    <div class="actions">
+      <button class="btn small danger" id="eraseLog">Erase all records</button>
+      <button class="btn small danger" id="forget">Forget paired phones</button>
+      <button class="btn small danger" id="factory">Factory reset</button>
     </div>
   </div>
   <div class="card">
-    <h2>Firmware update</h2>
-    <input type="file" id="fwFile" accept=".bin">
-    <label for="fwSha">Expected SHA-256 (optional, from the release notes)</label>
+    <div class="label">Firmware update</div>
+    <input type="file" id="fwFile" accept=".bin" style="margin-top:6px">
+    <label class="f" for="fwSha">Expected SHA-256 (optional)</label>
     <input id="fwSha" class="mono" maxlength="64">
-    <div class="row" style="margin-top:8px"><button id="fwUpload">Upload and restart</button></div>
+    <div class="actions"><button class="btn" id="fwUpload">Upload and restart</button></div>
     <p class="note" id="fwNote">The Edge rolls back to the current firmware if the new one does not start cleanly.</p>
+  </div>
+  <div class="card">
+    <div class="label">About</div>
+    <div id="aboutKv"></div>
+    <p class="cap" style="margin-top:10px">Bundled on the Edge: MapLibre GL JS (BSD-3-Clause), uPlot (MIT), satellite.js (MIT), Geist and Instrument Serif fonts (SIL OFL 1.1). Map data © OpenStreetMap contributors via OpenFreeMap, loaded only when Context is open.</p>
   </div>
 </section>
 
 </main>
 </div>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlgTitle"></h3>
+    <div id="dlgBody"></div>
+    <div class="actions" style="justify-content:flex-end">
+      <button class="btn" value="cancel" id="dlgCancel">Cancel</button>
+      <button class="btn primary" value="ok" id="dlgOk">Confirm</button>
+    </div>
+  </form>
+</dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
 let token = null; try { token = sessionStorage.getItem("edgeToken"); } catch (e) {}
-let ws = null, wsRetry = 0, status = null, info = null, config = null, regions = [], presets = [];
+const S = { info: null, status: null, config: null, ctx: null, internetOk: false, lastProbe: 0, ws: null, wsRetry: 0, regions: [], presets: [], nodes: [] };
 const obs = [];
 
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3200); }
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3400); }
 function setToken(t) { token = t; try { t ? sessionStorage.setItem("edgeToken", t) : sessionStorage.removeItem("edgeToken"); } catch (e) {} }
 
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+/* ---------------------------------------------------------------- API */
 async function cmd(body) {
   let r;
   for (let attempt = 0; ; attempt++) {
@@ -262,7 +503,7 @@ async function cmd(body) {
       break;
     } catch (e) {
       /* The Edge's radio may be briefly away on another channel: retry quietly. */
-      if (attempt >= 3) throw new Error("The Edge did not answer. Check that this device is still on its Wi-Fi.");
+      if (attempt >= 3) throw new Error("The Edge did not answer. Check that this device is still on its network.");
       await sleep(1500);
     }
   }
@@ -273,12 +514,29 @@ async function cmd(body) {
 }
 async function run(body, okMsg) { try { const j = await cmd(body); if (okMsg) toast(okMsg); return j; } catch (e) { toast(e.message); return null; } }
 
-/* ---------- login ---------- */
+/* ---------------------------------------------------------------- dialog */
+function ask(title, bodyNodes, okLabel, danger, noCancel) {
+  return new Promise((resolve) => {
+    const d = $("#dlg");
+    $("#dlgCancel").classList.toggle("hidden", !!noCancel);
+    $("#dlgTitle").textContent = title;
+    $("#dlgBody").replaceChildren(...bodyNodes);
+    const ok = $("#dlgOk"); ok.textContent = okLabel || "Confirm";
+    ok.className = "btn " + (danger ? "danger" : "primary");
+    d.onclose = () => resolve(d.returnValue === "ok");
+    d.returnValue = "cancel";
+    d.showModal();
+  });
+}
+const para = (t, cls) => el("p", cls || "note", t);
+const bullets = (items) => { const u = el("ul"); items.forEach((t) => u.append(el("li", "", t))); return u; };
+
+/* ---------------------------------------------------------------- login */
 async function login() {
   const pin = $("#pin").value.trim();
   $("#loginErr").textContent = "";
   try {
-    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin, unix_ms: Date.now() }) });
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin, unix_ms: Date.now(), tz_offset_min: -new Date().getTimezoneOffset() }) });
     const j = await r.json();
     if (!j.ok) { $("#loginErr").textContent = j.error || "Could not unlock"; return; }
     setToken(j.token); start();
@@ -286,49 +544,75 @@ async function login() {
 }
 function lock() {
   if (token) fetch("/api/logout", { method: "POST", headers: { "Authorization": "Bearer " + token } }).catch(() => {});
-  setToken(null); if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  setToken(null); if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
   $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#pin").value = "";
 }
 $("#loginBtn").onclick = login;
 $("#pin").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("#logoutBtn").onclick = lock;
 
-/* ---------- tabs ---------- */
-document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
-  document.querySelectorAll("nav button").forEach((x) => x.setAttribute("aria-selected", x === b));
-  document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === "tab-" + b.dataset.tab));
-  if (b.dataset.tab === "mesh") refreshMesh();
-  if (b.dataset.tab === "wifi") refreshWifi();
-  if (b.dataset.tab === "settings") fillSettings();
-});
-
-/* ---------- formatting ---------- */
-function ago(ms) { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + " s ago"; if (s < 3600) return Math.round(s / 60) + " min ago"; if (s < 86400) return Math.round(s / 3600) + " h ago"; return Math.round(s / 86400) + " d ago"; }
-function dur(ms) { const s = Math.round(ms / 1000); if (s < 120) return s + " s"; if (s < 7200) return Math.round(s / 60) + " min"; return (s / 3600).toFixed(1) + " h"; }
-function kv(target, rows) { const t = $(target); t.replaceChildren(...rows.map(([k, v]) => { const d = el("div", "kv"); d.append(el("span", "", k), el("span", "", String(v))); return d; })); }
-function recTime(r) {
-  if (r.time_valid) return ago(Date.now() - r.last_unix_ms);
-  return "uptime " + dur(r.last_uptime_ms) + " (boot " + r.boot + ", clock not set)";
+/* ---------------------------------------------------------------- tabs and visibility */
+function shown(elm) { return !!elm && getComputedStyle(elm).display !== "none"; }
+function showTab(name) {
+  $$("nav.tabs button").forEach((x) => x.setAttribute("aria-selected", x.dataset.tab === name));
+  $$("section.tab").forEach((s) => s.classList.toggle("active", s.id === "tab-" + name));
+  if (name === "mesh") refreshMesh();
+  if (name === "wifi") refreshWifi();
+  if (name === "settings") fillSettings();
+  if (name === "context") Ctx.open(); else Ctx.close();
+}
+$$("nav.tabs button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+function applyVisibility() {
+  const mode = (S.status && S.status.mode) || (S.config && S.config.mode) || "awareness";
+  document.body.dataset.mode = mode;
+  const sta = S.status && S.status.link && S.status.link.state === "connected";
+  const avail = sta && S.internetOk;
+  document.body.dataset.ctx = avail ? (S.ctx && S.ctx.enabled === false ? "off" : "on") : "none";
+  const active = $("nav.tabs button[aria-selected=true]");
+  if (active && !shown(active)) showTab("overview");
+}
+async function probeInternet(force) {
+  const sta = S.status && S.status.link && S.status.link.state === "connected";
+  if (!sta) { if (S.internetOk) { S.internetOk = false; applyVisibility(); } return; }
+  if (!force && Date.now() - S.lastProbe < 60000) return;
+  S.lastProbe = Date.now();
+  let ok = false;
+  try {
+    const c = new AbortController(); const t = setTimeout(() => c.abort(), 6000);
+    const r = await fetch(Ctx.STYLE, { signal: c.signal, cache: "no-store" });
+    clearTimeout(t); ok = r.ok;
+  } catch (e) { ok = false; }
+  if (ok !== S.internetOk) { S.internetOk = ok; applyVisibility(); }
 }
 
-/* ---------- status ---------- */
+/* ---------------------------------------------------------------- formatting */
+function ago(ms) { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + " s ago"; if (s < 3600) return Math.round(s / 60) + " min ago"; if (s < 86400) return Math.round(s / 3600) + " h ago"; return Math.round(s / 86400) + " d ago"; }
+function dur(ms) { const s = Math.round(ms / 1000); if (s < 120) return s + " s"; if (s < 7200) return Math.round(s / 60) + " min"; return (s / 3600).toFixed(1) + " h"; }
+function hhmm(ms) { return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+function kv(target, rows) { const t = typeof target === "string" ? $(target) : target; t.replaceChildren(...rows.map(([k, v]) => { const d = el("div", "kv"); d.append(el("span", "", k), el("span", "", String(v))); return d; })); }
+function recTime(r) { return r.time_valid ? ago(Date.now() - r.last_unix_ms) : "uptime " + dur(r.last_uptime_ms) + " (boot " + r.boot + ", clock not set)"; }
+function chip(kind) { return el("span", "chip " + ({ SENSED: "sensed", NETWORK: "net", PREDICTED: "pred" })[kind], kind); }
+function fmtU(v, u) { return v == null ? "-" : Math.round(v) + " " + u; }
+
+/* ---------------------------------------------------------------- overview */
 function renderStatus(s) {
-  status = s;
+  S.status = s;
   const mesh = s.mode === "mesh";
-  const mp = $("#modePill"); mp.className = "pill " + (mesh ? "net" : "on"); mp.lastChild.textContent = mesh ? "Mesh" : "Awareness";
-  document.querySelectorAll("#modeSeg button").forEach((b) => b.setAttribute("aria-selected", b.dataset.mode === s.mode));
-  $("#modeNote").textContent = mesh ? "LoRa mesh is on. Bluetooth and Wi-Fi observation is paused until you switch back." : "Bluetooth and Wi-Fi observation is on. LoRa is off.";
+  const mc = $("#modeChip"); mc.className = "chip " + (mesh ? "net" : "sensed"); mc.lastChild.textContent = mesh ? "Mesh" : "Awareness";
+  $("#modeName").textContent = mesh ? "Mesh" : "Awareness";
+  $("#modeSwitchBtn").textContent = mesh ? "Switch to Awareness" : "Switch to Mesh";
+  const mc2 = $("#modeChip2"); mc2.className = "chip " + (mesh ? "net" : "sensed"); mc2.textContent = mesh ? "LoRa on" : "Listening";
+  $("#modeNote").textContent = mesh ? "The LoRa mesh is on. Bluetooth and Wi-Fi observation is paused." : "Bluetooth and Wi-Fi observation is on. The LoRa radio is off.";
   const b = s.battery;
-  kv("#devKv", [
-    ["Running for", dur(s.uptime_ms)],
-    ["Clock", s.time_valid ? "set from " + s.time_source : "not set (records use uptime)"],
-    ["Power", b.present ? (b.mv / 1000).toFixed(2) + " V, about " + b.percent + "%" : "USB, no battery reading"],
-    ["Free memory", Math.round(s.heap_free / 1024) + " KB"],
-  ]);
+  const SRC = { ntp: "network time", browser: "this browser", phone: "the paired phone", api: "the app" };
+  const dev = [["Running for", dur(s.uptime_ms)], ["Clock", s.time_valid ? new Date(s.unix_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · from " + (SRC[s.time_source] || s.time_source) : "not set yet (records use uptime)"]];
+  if (b.present) dev.push(["Battery", (b.mv / 1000).toFixed(2) + " V, about " + b.percent_approx + "%"]); /* only once a battery is connected */
+  dev.push(["Free memory", Math.round(s.heap_free / 1024) + " KB"]);
+  kv("#devKv", dev);
   const l = s.link, bl = s.ble;
   kv("#linkKv", [
-    ["Wi-Fi", l.state === "ap" ? "access point " + l.ssid + " (" + l.stations + " connected)" : l.state === "connected" ? "joined " + l.ssid + " (" + l.rssi + " dBm)" : l.state],
-    ["Address", l.ip || "-"],
+    ["Wi-Fi", l.state === "ap" ? "own network " + l.ssid + " (" + l.stations + " connected)" : l.state === "connected" ? "joined " + l.ssid + " (" + l.rssi + " dBm)" : l.state],
+    ["Address", l.ip ? l.ip + (l.state === "connected" && S.info ? " · " + S.info.mdns_host : "") : "-"],
     ["Wi-Fi listening", l.sniffing ? (l.hopping ? "channels 1-13" : "channel " + l.channel) : "off"],
     ["Bluetooth", bl.secured + " phone(s) connected, " + bl.bonds + " paired"],
     ["Pairing", bl.pairing_open ? "open" + (bl.pairing_left_s ? " for " + bl.pairing_left_s + " s" : " until a phone pairs") : "closed"],
@@ -341,26 +625,127 @@ function renderStatus(s) {
     ["Probing devices heard now", a.open_sightings.wifi_probe],
     ["Records written since start", a.records],
   ]);
-  const g = s.log;
-  kv("#logKv", [
-    ["Stored", g.count + " of " + g.capacity],
-    ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"],
-    ["State", g.erasing ? "erasing" : "ready"],
+  const m = s.mesh, c = m.counters || {};
+  kv("#meshKv", [
+    ["Node", m.node_id],
+    ["Region", m.region ? m.region + " · " + (m.preset || "") + (m.freq_mhz ? " · " + m.freq_mhz.toFixed(3) + " MHz" : "") : "not set: radio silent"],
+    ["Nodes heard", m.nodes],
+    ["Received / sent / relayed", (c.rx || 0) + " / " + (c.tx || 0) + " / " + (c.relayed || 0)],
+    ["Radio", m.radio ? m.radio.chip_mode + " · channel " + m.radio.rssi_now + " dBm" : (m.radio_present ? "ready" : "not responding")],
   ]);
+  const g = s.log;
+  kv("#logKv", [["Stored", g.count + " of " + g.capacity], ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"], ["State", g.erasing ? "erasing" : "ready"]]);
   const banner = $("#meshBanner");
-  if (!s.mesh.radio_present) { banner.textContent = "The LoRa radio did not respond."; banner.classList.remove("hidden"); }
-  else if (!s.mesh.region) { banner.textContent = "Set the LoRa region in Settings before the Edge can send or receive on the mesh."; banner.classList.remove("hidden"); }
-  else if (!s.mesh.running) { banner.textContent = "Mesh mode is off. Switch to Mesh on the Overview tab to send and receive."; banner.classList.remove("hidden"); }
+  if (!m.radio_present) { banner.textContent = "The LoRa radio did not respond."; banner.classList.remove("hidden"); }
+  else if (!m.region) { banner.textContent = "Set the LoRa region in Settings before the Edge can send or receive on the mesh."; banner.classList.remove("hidden"); }
   else banner.classList.add("hidden");
+  applyVisibility();
+  probeInternet(false);
 }
-document.querySelectorAll("#modeSeg button").forEach((b) => b.onclick = async () => {
-  const j = await run({ cmd: "set_mode", mode: b.dataset.mode }, b.dataset.mode === "mesh" ? "Switched to mesh" : "Switched to awareness");
-  if (j) { config = j.config; refreshStatus(); }
-});
-$("#pairBtn").onclick = () => run({ cmd: "pairing_open", seconds: 120 }, "Pairing open. The code appears on the Edge's display.");
 async function refreshStatus() { const j = await run({ cmd: "status" }); if (j) renderStatus(j.status); }
 
-/* ---------- observations ---------- */
+$("#modeSwitchBtn").onclick = async () => {
+  const toMesh = !(S.status && S.status.mode === "mesh");
+  if (!S.config) { const c = await run({ cmd: "get_config" }); if (c) S.config = c.config; }
+  if (!S.regions.length) { const r = await run({ cmd: "regions" }); if (r) { S.regions = r.regions; S.presets = r.presets; } }
+  const m = S.config ? S.config.mesh : {};
+  let regionSel = null;
+  const body = [];
+  if (toMesh) {
+    body.push(bullets([
+      "Bluetooth and Wi-Fi observation pauses. Sightings still open are saved first.",
+      "The Edge joins the LoRa mesh as " + (m.long_name || "Sotreus Edge") + " (" + (m.node_id || "") + ") and relays packets for other nodes.",
+      "Switching back later takes a moment and needs no restart.",
+    ]));
+    if (!m.region || m.region === "UNSET") {
+      body.push(el("label", "f", "LoRa region (required)"));
+      regionSel = el("select");
+      const pick = el("option", "", "Choose the region you are in"); pick.value = ""; regionSel.append(pick);
+      S.regions.forEach((r) => { const o = el("option", "", r); o.value = r; regionSel.append(o); });
+      body.push(regionSel, para("The region decides which frequencies the Edge may transmit on. Pick the one for where it is used."));
+    } else {
+      body.push(para("It transmits on " + m.region + " with the " + m.preset + " preset."));
+    }
+  } else {
+    body.push(bullets([
+      "The LoRa mesh stops. Messages still waiting to be sent are dropped.",
+      "Bluetooth and Wi-Fi observation resumes and new records are written again.",
+    ]));
+  }
+  const ok = await ask(toMesh ? "Switch to Mesh?" : "Switch to Awareness?", body, toMesh ? "Switch to Mesh" : "Switch to Awareness");
+  if (!ok) return;
+  const config = { mode: toMesh ? "mesh" : "awareness" };
+  if (regionSel) {
+    if (!regionSel.value) { toast("Pick a LoRa region first"); return; }
+    config.mesh = { region: regionSel.value };
+  }
+  const j = await run({ cmd: "set_config", config }, toMesh ? "Switched to Mesh" : "Switched to Awareness");
+  if (j) { S.config = j.config; refreshStatus(); }
+};
+$("#pairBtn").onclick = () => run({ cmd: "pairing_open", seconds: 120 }, "Pairing open for 2 minutes. The code appears on the Edge's display.");
+
+
+/* ---------------------------------------------------------------- record decoding (docs/protocol.md §4)
+   The Edge stores and sends raw 256-byte records; turning them into objects happens here, not on the Edge. */
+const REC_SIZE = 256;
+const REC_TYPES = { 1: "ble", 2: "wifi_ap", 3: "wifi_probe", 4: "mesh_text", 5: "event" };
+const AUTH = { 0: "open", 1: "wep", 2: "wpa", 3: "wpa2", 4: "wpa3", 5: "wpa2_wpa3", 6: "enterprise", 7: "owe" };
+const EVENTS = { 1: "boot", 2: "mode", 3: "time_set", 4: "log_erased", 5: "config", 6: "firmware" };
+const utf8 = new TextDecoder("utf-8");
+const hexb = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
+const mac = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join(":");
+const nodeId = (n) => n === 0xffffffff ? "broadcast" : "!" + n.toString(16).padStart(8, "0");
+const txt = (u8) => utf8.decode(u8).replace(/[\u0000-\u001f\u007f]/g, "?");
+function adName(u8) {
+  for (let i = 0; i + 1 < u8.length;) { const l = u8[i]; if (!l || i + 1 + l > u8.length) break; if (u8[i + 1] === 0x09 || u8[i + 1] === 0x08) return txt(u8.subarray(i + 2, i + 1 + l)); i += 1 + l; }
+  return null;
+}
+function decodeRecord(buf, off) {
+  const dv = new DataView(buf, off, REC_SIZE), u8 = new Uint8Array(buf, off, REC_SIZE);
+  const seq = dv.getUint32(0, true), type = dv.getUint8(4), flags = dv.getUint8(5);
+  if (!seq || seq === 0xffffffff) return null;
+  const tv = (flags & 1) !== 0, b = 28, B = (o) => dv.getUint8(b + o), I8 = (o) => dv.getInt8(b + o), U32 = (o) => dv.getUint32(b + o, true);
+  const r = { seq, type: REC_TYPES[type] || "unknown", provenance: "SENSED", time_valid: tv, boot: dv.getUint16(6, true) };
+  r[tv ? "first_unix_ms" : "first_uptime_ms"] = Number(dv.getBigInt64(8, true));
+  r[tv ? "last_unix_ms" : "last_uptime_ms"] = Number(dv.getBigInt64(16, true));
+  if (flags & 2) r.continues = true;
+  if (flags & 4) r.truncated = true;
+  const rssi = (o) => ({ last: I8(o), max: I8(o + 1), min: I8(o + 2) });
+  if (type === 1) {
+    const al = Math.min(B(16), 31), rl = Math.min(B(17), 31), adv = u8.subarray(b + 18, b + 18 + al), rsp = u8.subarray(b + 49, b + 49 + rl);
+    Object.assign(r, { origin: "EdgeBle", addr: mac(u8.subarray(b, b + 6)), addr_type: B(6) ? "random" : "public", pdu: B(7), connectable: (B(11) & 4) !== 0, rssi: rssi(8), count: U32(12), adv: hexb(adv) });
+    if (B(11) & 2) r.rsp = hexb(rsp);
+    const n = adName(adv) || adName(rsp); if (n) r.name = n;
+  } else if (type === 2) {
+    const f = B(11), sl = Math.min(B(18), 32);
+    Object.assign(r, { origin: "EdgeWifi", bssid: mac(u8.subarray(b, b + 6)), ssid: (f & 1) || !sl ? null : txt(u8.subarray(b + 19, b + 19 + sl)), hidden: (f & 1) !== 0,
+      channel: B(6), auth: AUTH[B(10)] || "unknown", rssi: rssi(7), count: U32(12), scan_only: (f & 8) !== 0 });
+    if (dv.getUint16(b + 16, true)) r.beacon_tu = dv.getUint16(b + 16, true);
+    if (f & 4) r.remote_id = hexb(u8.subarray(b + 52, b + 52 + Math.min(B(51), 120)));
+  } else if (type === 3) {
+    const f = B(10), n = Math.min(B(11), 4);
+    Object.assign(r, { origin: "EdgeWifi", mac: mac(u8.subarray(b, b + 6)), randomized: (f & 1) !== 0, wildcard: (f & 2) !== 0, channel: B(6), rssi: rssi(7), count: U32(12),
+      ssid_hashes: [...Array(n)].map((_, i) => U32(16 + 4 * i).toString(16).padStart(8, "0")), more_ssids: (f & 8) !== 0 });
+    if (f & 4) r.ssids = [...Array(n)].map((_, i) => txt(u8.subarray(b + 33 + 33 * i, b + 33 + 33 * i + Math.min(B(32 + 33 * i), 32))));
+  } else if (type === 4) {
+    const dir = B(16);
+    Object.assign(r, { provenance: "NETWORK", origin: "EdgeLora", from: nodeId(U32(0)), to: nodeId(U32(4)), packet_id: U32(8), channel: B(12), dir: dir ? "sent" : "received",
+      text: txt(u8.subarray(b + 18, b + 18 + Math.min(B(17), 206))) });
+    if (!dir) Object.assign(r, { rssi: I8(14), snr: I8(15) / 4, hop_limit: B(13) & 15, hop_start: B(13) >> 4 });
+  } else if (type === 5) {
+    Object.assign(r, { origin: "Edge", event: EVENTS[dv.getUint16(b, true)] || "other", detail: txt(u8.subarray(b + 3, b + 3 + Math.min(B(2), 221))) });
+  }
+  return r;
+}
+function decodeRecords(buf) { const out = []; for (let o = 0; o + REC_SIZE <= buf.byteLength; o += REC_SIZE) { const r = decodeRecord(buf, o); if (r) out.push(r); } return out; }
+async function fetchRecords(from, limit) {
+  const r = await fetch("/api/records?fmt=bin&from=" + from + "&limit=" + limit, { headers: { "Authorization": "Bearer " + token } });
+  if (r.status === 401) { lock(); throw new Error("Session ended"); }
+  if (!r.ok) throw new Error("Could not read records");
+  return decodeRecords(await r.arrayBuffer());
+}
+
+/* ---------------------------------------------------------------- observations */
 function obsLabel(r) {
   switch (r.type) {
     case "ble": return r.name || r.addr;
@@ -373,108 +758,276 @@ function obsLabel(r) {
 }
 const TYPE_NAME = { ble: "BLE", wifi_ap: "Wi-Fi AP", wifi_probe: "Wi-Fi probe", mesh_text: "LoRa", event: "Edge" };
 function renderObs() {
-  const list = $("#obsList");
   if (!obs.length) return;
-  list.replaceChildren(...obs.slice(0, 150).map((r) => {
-    const li = el("li");
-    const top = el("div", "obs-top");
-    top.append(el("span", "chip " + (r.provenance === "NETWORK" ? "network" : "sensed"), r.provenance), el("span", "chip", TYPE_NAME[r.type] || r.type), el("strong", "", obsLabel(r)));
-    li.append(top);
+  $("#obsList").replaceChildren(...obs.slice(0, 150).map((r) => {
+    const li = el("li", "row");
+    const g = el("div", "grow");
+    const top = el("div"); top.style.cssText = "display:flex;gap:8px;align-items:baseline;flex-wrap:wrap";
+    top.append(el("span", "t", obsLabel(r)), el("span", "chip", TYPE_NAME[r.type] || r.type));
     const meta = [];
-    if (r.rssi) meta.push("signal " + r.rssi.min + " to " + r.rssi.max + " dBm");
+    if (r.rssi) meta.push(r.rssi.min + " to " + r.rssi.max + " dBm");
     if (r.count) meta.push(r.count + " reports");
     if (r.channel && r.type !== "mesh_text") meta.push("ch " + r.channel);
     if (r.auth) meta.push(r.auth);
     if (r.continues) meta.push("still heard");
-    meta.push(recTime(r));
-    meta.push("#" + r.seq);
-    li.append(el("div", "small muted", meta.join(" · ")));
+    meta.push(recTime(r), "#" + r.seq);
+    g.append(top, el("div", "s", meta.join(" · ")));
+    li.append(g, chip(r.provenance));
     return li;
   }));
 }
 function addObs(r) { if (obs.some((o) => o.seq === r.seq)) return; obs.unshift(r); obs.sort((a, b) => b.seq - a.seq); if (obs.length > 300) obs.length = 300; renderObs(); }
 $("#loadRecent").onclick = async () => {
-  const head = status ? status.log.head : 0;
-  let from = Math.max(status ? status.log.oldest : 0, head - 59);
-  for (let i = 0; i < 3; i++) {
-    const j = await run({ cmd: "records", from, limit: 20 });
-    if (!j || !j.records.length) break;
-    j.records.forEach(addObs); from = j.next;
-  }
+  const head = S.status ? S.status.log.head : 0;
+  const from = Math.max(S.status ? S.status.log.oldest : 0, head - 59);
+  try { (await fetchRecords(from, 60)).forEach(addObs); } catch (e) { toast(e.message); }
 };
-$("#clearView").onclick = () => { obs.length = 0; $("#obsList").replaceChildren(el("li", "muted", "View cleared. Records stay on the Edge.")); };
+$("#clearView").onclick = () => { obs.length = 0; $("#obsList").replaceChildren(el("li", "cap", "View cleared. Records stay on the Edge.")); };
 $("#downloadAll").onclick = async () => {
   try {
-    const r = await fetch("/api/records?from=0&limit=5000&fmt=json", { headers: { "Authorization": "Bearer " + token } });
-    if (!r.ok) throw new Error("Download failed");
-    const blob = await r.blob(); const a = el("a"); a.href = URL.createObjectURL(blob);
-    a.download = "sotreus-edge-" + (info ? info.suffix : "") + "-records.ndjson"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast("Reading records from the Edge…");
+    const all = []; let from = 0;
+    for (;;) { const part = await fetchRecords(from, 2000); if (!part.length) break; all.push(...part); from = part[part.length - 1].seq + 1; if (part.length < 2000) break; }
+    const a = el("a"); a.href = URL.createObjectURL(new Blob([all.map((x) => JSON.stringify(x)).join("\n") + "\n"], { type: "application/x-ndjson" }));
+    a.download = "sotreus-edge-" + (S.info ? S.info.suffix : "") + "-records.ndjson"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   } catch (e) { toast(e.message); }
 };
 
-/* ---------- mesh ---------- */
-let nodes = [];
-function nodeName(id) { const n = nodes.find((x) => x.id === id); return n && n.short_name ? n.short_name : id; }
+/* ---------------------------------------------------------------- mesh */
+S.traces = []; S.reply = null; S.chanUrl = "";
+function nodeOf(id) { return S.nodes.find((x) => x.id === id); }
+function nodeName(id) { const n = nodeOf(id); return n && n.short_name ? n.short_name : id; }
+function nodeLong(id) { const n = nodeOf(id); return n && n.long_name ? n.long_name : id; }
+function roleLabel(r) { const o = [...$("#mRole").options].find((x) => x.value === r); return o ? o.textContent : r; }
+function isMe(id) { return S.config && S.config.mesh && id === S.config.mesh.node_id; }
+function precText(bits) {
+  if (!bits) return "off";
+  if (bits >= 32) return "exact";
+  const km = Math.pow(2, 32 - bits) * 1e-7 * 111.32 / 2;
+  return "within about " + (km >= 1 ? km.toFixed(1) + " km" : Math.round(km * 1000) + " m");
+}
+const TX_STATUS = { queued: "waiting to send", sent: "sent", relayed: "relayed by a neighbour", delivered: "delivered", failed: "not delivered", no_ack: "no acknowledgement", no_relay_heard: "no relay heard" };
 async function refreshMesh() {
-  const [n, m] = await Promise.all([run({ cmd: "mesh_nodes" }), run({ cmd: "mesh_messages" })]);
-  if (n) { nodes = n.nodes; renderNodes(); }
+  const [n, m, w, st] = await Promise.all([run({ cmd: "mesh_nodes" }), run({ cmd: "mesh_messages" }), run({ cmd: "mesh_waypoints" }), run({ cmd: "mesh_status" })]);
+  if (n) { S.nodes = n.nodes; renderNodes(); }
   if (m) renderMsgs(m.messages);
+  if (w) renderWaypoints(w.waypoints);
+  if (st) renderMeshSelf(st.mesh);
+  if (S.config) {
+    const sel = $("#msgCh"), cur = sel.value;
+    sel.replaceChildren(...S.config.mesh.channels.map((c, i) => { const o = el("option", "", i + (c.name ? " " + c.name : " primary")); o.value = i; return o; }));
+    sel.value = cur || "0";
+    renderCanned();
+  }
+  if (!S.chanUrl) loadChanUrl();
+  renderTraces();
+}
+function renderCanned() {
+  const list = (S.config && S.config.mesh.canned) || [];
+  $("#cannedRow").replaceChildren(...list.map((t) => { const b = el("button", "btn small", t); b.onclick = () => { $("#msgText").value = t; $("#msgText").dispatchEvent(new Event("input")); $("#msgText").focus(); }; return b; }));
 }
 function renderNodes() {
-  const rows = nodes.slice().sort((a, b) => a.last_heard_ago_s - b.last_heard_ago_s).map((n) => {
-    const tr = el("tr");
-    [n.long_name || "-", n.id, ago(n.last_heard_ago_s * 1000), n.hops_away ?? "-", n.rssi + " dBm / " + n.snr + " dB"].forEach((v) => tr.append(el("td", "", String(v))));
-    return tr;
-  });
-  $("#nodeRows").replaceChildren(...rows);
+  const list = S.nodes.slice().sort((a, b) => (b.favorite - a.favorite) || ((a.last_heard_ago_s ?? 1e12) - (b.last_heard_ago_s ?? 1e12)));
+  $("#nodeList").replaceChildren(...(list.length ? list.map((n) => {
+    const li = el("li", "row"), g = el("div", "grow");
+    const d = n.device || {};
+    const bits = [n.id,
+      n.last_heard_ago_s != null ? ago(n.last_heard_ago_s * 1000) : "not heard since restart",
+      n.hops_away != null ? (n.hops_away === 0 ? "direct" : n.hops_away + " hop" + (n.hops_away === 1 ? "" : "s")) : null,
+      n.hops_away === 0 ? n.rssi + " dBm · SNR " + n.snr + " dB" : null,
+      d.battery_level ? (d.battery_level > 100 ? "external power" : d.battery_level + "% battery") : null,
+      n.has_public_key ? "private DMs" : null,
+      n.ignored ? "ignored" : null].filter(Boolean);
+    g.append(el("div", "t", (n.favorite ? "★ " : "") + (n.long_name || n.id)), el("div", "s", bits.join(" · ")));
+    const b = el("button", "btn small", "Details"); b.onclick = () => nodeDialog(n);
+    li.append(g, b); return li;
+  }) : [el("li", "cap", "No nodes heard yet.")]));
   const sel = $("#msgTo"), cur = sel.value;
-  sel.replaceChildren(el("option", "", "Everyone on the channel"));
-  sel.firstChild.value = "broadcast";
-  nodes.forEach((n) => { const o = el("option", "", (n.long_name || n.id) + " (" + n.id + ")"); o.value = n.id; sel.append(o); });
-  sel.value = cur || "broadcast";
+  const all = el("option", "", "Everyone on the channel"); all.value = "broadcast";
+  sel.replaceChildren(all, ...list.filter((n) => !n.ignored).map((n) => { const o = el("option", "", (n.long_name || n.id) + " (" + n.id + ")"); o.value = n.id; return o; }));
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "broadcast";
+}
+function closeDlg() { const d = $("#dlg"); d.returnValue = "cancel"; d.close(); }
+function nodeDialog(n) {
+  const rows = [["ID", n.id]];
+  if (n.role) rows.push(["Role", roleLabel(n.role)]);
+  if (n.short_name) rows.push(["Short name", n.short_name]);
+  rows.push(["Last heard", n.last_heard_ago_s != null ? ago(n.last_heard_ago_s * 1000) : "not since restart"]);
+  if (n.hops_away != null) rows.push(["Hops away", n.hops_away]);
+  rows.push(["Last packet", n.rssi + " dBm · SNR " + n.snr + " dB"]);
+  rows.push(["Private direct messages", n.has_public_key ? "yes, key received" : "not yet, no key received"]);
+  const d = n.device;
+  if (d) {
+    if (d.battery_level) rows.push(["Battery", d.battery_level > 100 ? "external power" : d.battery_level + "%" + (d.voltage ? " · " + d.voltage.toFixed(2) + " V" : "")]);
+    rows.push(["Channel use / own airtime", d.channel_util.toFixed(1) + "% / " + d.air_util_tx.toFixed(1) + "%"]);
+    if (d.uptime_s) rows.push(["Up for", ago(d.uptime_s * 1000).replace(" ago", "")]);
+  }
+  const e = n.environment;
+  if (e) rows.push(["Environment", [e.temperature_c != null ? e.temperature_c.toFixed(1) + " °C" : null, e.humidity_pct ? e.humidity_pct.toFixed(0) + "% RH" : null, e.pressure_hpa ? e.pressure_hpa.toFixed(0) + " hPa" : null].filter(Boolean).join(" · ")]);
+  const p = n.reported_position;
+  if (p) rows.push(["Reported position", p.lat.toFixed(5) + ", " + p.lon.toFixed(5) + " · " + precText(p.precision_bits || 32) + (p.reported_unix_s ? " · " + new Date(p.reported_unix_s * 1000).toLocaleString() : "")]);
+  if (n.neighbors && n.neighbors.length) rows.push(["Hears directly", n.neighbors.map((x) => nodeName(x.id) + " (" + x.snr + " dB)").join(", ")]);
+  const box = el("div"); kv(box, rows);
+  const acts = el("div", "actions");
+  const mk = (label, fn, cls) => { const b = el("button", "btn small" + (cls ? " " + cls : ""), label); b.onclick = async () => { closeDlg(); await fn(); }; acts.append(b); };
+  mk("Message", () => { $("#msgTo").value = n.id; $("#msgText").focus(); });
+  mk("Route check", async () => { if (await run({ cmd: "mesh_traceroute", to: n.id, channel: +$("#msgCh").value }, "Route check sent. Results appear when it returns.")) { S.traces.unshift({ to: n.id, at: Date.now(), pending: true }); renderTraces(); } });
+  mk("Ask for position", () => run({ cmd: "mesh_request_position", to: n.id, channel: +$("#msgCh").value }, "Asked. The node answers if it shares its position."));
+  mk(n.favorite ? "Remove favourite" : "Favourite", async () => { if (await run({ cmd: "mesh_node", id: n.id, favorite: !n.favorite })) refreshMesh(); });
+  mk(n.ignored ? "Stop ignoring" : "Ignore", async () => { if (await run({ cmd: "mesh_node", id: n.id, ignored: !n.ignored }, n.ignored ? "No longer ignored" : "Ignored. Its packets are dropped and not relayed.")) { await fillSettings(); refreshMesh(); } }, n.ignored ? "" : "danger");
+  const pnote = p ? para("The position is what the node reported over the mesh, not something this Edge measured.") : null;
+  ask(n.long_name || n.id, [box, ...(pnote ? [pnote] : []), acts], "Close", false, true);
 }
 function renderMsgs(list) {
   const box = $("#msgList");
-  if (!list.length) { box.replaceChildren(el("p", "muted", "No messages yet.")); return; }
-  box.replaceChildren(...list.slice().reverse().map((m) => {
-    const d = el("div", "msg" + (m.dir === "sent" ? " out" : ""));
-    const who = m.dir === "sent" ? "You to " + (m.to === "broadcast" ? "channel " + m.channel : nodeName(m.to)) : nodeName(m.from) + (m.to === "broadcast" ? " on channel " + m.channel : " to you");
-    d.append(el("div", "small muted", who + " · " + ago(m.ago_s * 1000) + (m.dir === "sent" ? " · " + m.status : " · " + m.rssi + " dBm")), el("div", "", m.text));
+  const byId = {}, reacts = {};
+  list.forEach((m) => { byId[m.id] = m; });
+  const shown = list.filter((m) => {
+    if (m.reaction && m.reply_id && byId[m.reply_id]) { (reacts[m.reply_id] = reacts[m.reply_id] || []).push(m); return false; }
+    return true;
+  });
+  if (!shown.length) { box.replaceChildren(el("p", "cap", "No messages yet.")); return; }
+  box.replaceChildren(...shown.slice().reverse().map((m) => {
+    const out = m.dir === "sent", bcast = m.to === "broadcast";
+    const d = el("div", "msg" + (out ? " out" : ""));
+    const who = out ? "You to " + (bcast ? "channel " + m.channel : nodeName(m.to)) : nodeName(m.from) + (bcast ? " on channel " + m.channel : " to you");
+    const meta = [who, m.ago_s != null ? ago(m.ago_s * 1000) : (m.unix_s ? new Date(m.unix_s * 1000).toLocaleString() : "")];
+    if (m.pki) meta.push("private");
+    meta.push(out ? (TX_STATUS[m.status] || m.status) : m.rssi + " dBm · SNR " + m.snr + " dB");
+    d.append(el("div", "cap", meta.filter(Boolean).join(" · ")));
+    if (m.reply_id) {
+      const t = byId[m.reply_id];
+      d.append(el("div", "cap", (m.reaction ? "Reacted to " : "Reply to ") + (t ? (t.dir === "sent" ? "you" : nodeName(t.from)) + ": " + t.text.slice(0, 60) : "an earlier message")));
+    }
+    d.append(el("div", "", m.text));
+    const rs = reacts[m.id];
+    if (rs) d.append(el("div", "cap", rs.map((r) => r.text + " " + (r.dir === "sent" ? "you" : nodeName(r.from))).join("   ")));
+    if (!out) {
+      const a = el("div", "actions");
+      const target = bcast ? "broadcast" : m.from;
+      const rb = el("button", "btn small", "Reply");
+      rb.onclick = () => {
+        S.reply = { id: m.id };
+        $("#msgTo").value = [...$("#msgTo").options].some((o) => o.value === target) ? target : "broadcast";
+        $("#msgCh").value = String(m.channel);
+        $("#replyText").textContent = "Replying to " + nodeName(m.from) + ": " + m.text.slice(0, 50);
+        $("#replyLine").classList.remove("hidden");
+        $("#msgText").focus();
+      };
+      const lk = el("button", "btn small", "👍");
+      lk.setAttribute("aria-label", "React with thumbs up");
+      lk.onclick = async () => { if (await run({ cmd: "mesh_send", to: target, channel: m.channel, text: "👍", reply_id: m.id, reaction: true, want_ack: false })) refreshMesh(); };
+      a.append(rb, lk); d.append(a);
+    }
     return d;
   }));
 }
-$("#msgText").addEventListener("input", () => { const n = new TextEncoder().encode($("#msgText").value).length; $("#msgCount").textContent = n + " / 200 bytes"; });
+function clearReply() { S.reply = null; $("#replyLine").classList.add("hidden"); }
+$("#replyCancel").onclick = clearReply;
+$("#msgText").addEventListener("input", () => { $("#msgCount").textContent = "· " + new TextEncoder().encode($("#msgText").value).length + " / 200 bytes"; });
 $("#msgSend").onclick = async () => {
   const text = $("#msgText").value.trim(); if (!text) return;
-  const j = await run({ cmd: "mesh_send", text, to: $("#msgTo").value, channel: +$("#msgCh").value, want_ack: true });
-  if (j) { $("#msgText").value = ""; $("#msgCount").textContent = ""; refreshMesh(); }
+  const body = { cmd: "mesh_send", text, to: $("#msgTo").value, channel: +$("#msgCh").value, want_ack: true };
+  if (S.reply) body.reply_id = S.reply.id;
+  const j = await run(body);
+  if (j) { $("#msgText").value = ""; $("#msgCount").textContent = ""; clearReply(); refreshMesh(); }
 };
+$("#sfAsk").onclick = () => run({ cmd: "mesh_store_forward", channel: +$("#msgCh").value }, "Asked. Stored messages arrive over the next few minutes.");
+function renderTraces() {
+  const c = $("#traceCard");
+  if (!S.traces.length) { c.classList.add("hidden"); return; }
+  c.classList.remove("hidden");
+  const fmt = (ids, snr) => ids.map((id, i) => (i === 0 ? id : id + (snr && snr[i - 1] != null ? " (" + snr[i - 1] + " dB)" : ""))).join(" → ");
+  $("#traceList").replaceChildren(...S.traces.slice(0, 5).map((t) => {
+    const d = el("div", "msg");
+    d.append(el("div", "cap", "Route check to " + nodeLong(t.to) + " · " + ago(Date.now() - t.at)));
+    if (t.pending) { d.append(el("div", "cap", "Waiting for the answer...")); return d; }
+    d.append(el("div", "mono", "Out: " + fmt(["You", ...t.route.map(nodeName), nodeName(t.to)], t.snr_towards)));
+    if (t.snr_back && t.snr_back.length) d.append(el("div", "mono", "Back: " + fmt([nodeName(t.to), ...t.route_back.map(nodeName), "You"], t.snr_back)));
+    return d;
+  }));
+}
+function onTraceroute(e) {
+  const i = S.traces.findIndex((t) => t.pending && t.to === e.to);
+  const t = { to: e.to, at: Date.now(), route: e.route || [], snr_towards: e.snr_towards || [], route_back: e.route_back || [], snr_back: e.snr_back || [] };
+  if (i >= 0) S.traces[i] = t; else S.traces.unshift(t);
+  renderTraces();
+}
+function renderWaypoints(list) {
+  $("#wpList").replaceChildren(...(list.length ? list.map((w) => {
+    const li = el("li", "row"), g = el("div", "grow");
+    const bits = [w.lat.toFixed(5) + ", " + w.lon.toFixed(5), "from " + (isMe(w.from) ? "you" : nodeName(w.from)),
+      w.expire_unix_s ? "until " + new Date(w.expire_unix_s * 1000).toLocaleString() : null, w.description || null];
+    g.append(el("div", "t", w.name || "Waypoint"), el("div", "s", bits.filter(Boolean).join(" · ")));
+    li.append(g); return li;
+  }) : [el("li", "cap", "No waypoints yet.")]));
+}
+$("#wpSend").onclick = async () => {
+  const lat = parseFloat($("#wpLat").value), lon = parseFloat($("#wpLon").value);
+  if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) { toast("Enter a latitude and longitude"); return; }
+  const name = $("#wpName").value.trim() || "Waypoint", hours = +$("#wpHours").value || 0, ch = +$("#msgCh").value;
+  if (!await ask("Share this waypoint?", [para("Everyone on channel " + ch + " receives “" + name + "” at " + lat.toFixed(5) + ", " + lon.toFixed(5) + ".")], "Share")) return;
+  const body = { cmd: "mesh_waypoint", name, description: $("#wpDesc").value.trim(), lat, lon, channel: ch };
+  if (hours) body.expire_unix_s = Math.floor(Date.now() / 1000) + hours * 3600;
+  if (await run(body, "Waypoint shared")) { $("#wpName").value = ""; $("#wpDesc").value = ""; refreshMesh(); }
+};
+function renderMeshSelf(m) {
+  const c = m.counters || {};
+  const rows = [["Node", m.node_id + (m.role ? " · " + roleLabel(m.role) : "")],
+    ["Public key", m.public_key ? m.public_key.slice(0, 16) + "…" : "none (licensed mode)"],
+    ["Channel use, last minute", m.channel_util_pct != null ? m.channel_util_pct.toFixed(1) + "%" : "-"],
+    ["Own airtime, last hour", m.air_util_tx_pct != null ? m.air_util_tx_pct.toFixed(2) + "% of " + (m.duty_cycle_pct || 100) + "% allowed" : "-"]];
+  if (m.polite_hold) rows.push(["Sending", "holding back while the channel is busy"]);
+  rows.push(["Received / private / not decoded", (c.rx || 0) + " / " + (c.rx_pki || 0) + " / " + (c.rx_bad || 0)]);
+  rows.push(["Sent / relayed / dropped", (c.tx || 0) + " / " + (c.relayed || 0) + " / " + (c.tx_dropped || 0)]);
+  if (m.paxcounter) rows.push(["Paxcounter (sent as counts only)", m.paxcounter.ble + " Bluetooth · " + m.paxcounter.wifi + " Wi-Fi"]);
+  kv("#meshSelfKv", rows);
+  const sf = m.store_forward_routers || 0;
+  $("#sfNote").textContent = sf ? sf + " store & forward router" + (sf === 1 ? "" : "s") + " heard. They keep channel messages for nodes that were away." : "No store & forward router heard yet.";
+  $("#sfAsk").disabled = !sf;
+}
+async function loadChanUrl() { const j = await run({ cmd: "mesh_channel_url" }); if (j) { S.chanUrl = j.url; $("#chanUrl").textContent = j.url; } }
+$("#chanCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText(S.chanUrl); toast("Copied"); return; } catch (e) { /* plain HTTP: fall back */ }
+  const t = el("textarea"); t.value = S.chanUrl; document.body.append(t); t.select();
+  let ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  t.remove(); toast(ok ? "Copied" : "Select the link and copy it");
+};
+async function importChan(replace) {
+  const url = $("#chanImportUrl").value.trim(); if (!url) { toast("Paste a channel link first"); return; }
+  const text = replace ? "The link's channels, keys, region, preset and hop limit replace the current ones. Nodes on the old channels stop hearing this Edge." : "The link's channels are added after the current ones. Region and preset stay as they are.";
+  if (!await ask(replace ? "Replace all channels?" : "Add these channels?", [para(text)], replace ? "Replace" : "Add", replace)) return;
+  const j = await run({ cmd: "mesh_channel_url", url, replace }, replace ? "Channels replaced" : "Channels added");
+  if (j) { S.chanUrl = j.url; $("#chanUrl").textContent = j.url; $("#chanImportUrl").value = ""; await fillSettings(); refreshMesh(); }
+}
+$("#chanAddBtn").onclick = () => importChan(false);
+$("#chanReplaceBtn").onclick = () => importChan(true);
 
-/* ---------- wifi ---------- */
+/* ---------------------------------------------------------------- wifi */
 async function refreshWifi(scan) {
   const j = await run({ cmd: scan === true ? "wifi_scan" : "wifi_list" });
-  if (!j) return;
+  if (!j) return null;
   $("#knownList").replaceChildren(...(j.known.length ? j.known.map((k) => {
-    const li = el("li", "row"); const b = el("button", "danger", "Remove"); b.style.flex = "0 0 auto";
-    b.onclick = async () => { if (await run({ cmd: "wifi_remove", ssid: k.ssid }, "Removed")) refreshWifi(); };
-    li.append(el("span", "", k.ssid + (k.has_password ? "" : " (open)")), b); return li;
-  }) : [el("li", "muted", "No networks yet. The Edge runs its own access point until one is added.")]));
-  $("#nearby").replaceChildren(...j.nearby.map((n) => { const o = el("option"); o.value = n.ssid; o.label = n.rssi + " dBm, " + n.auth; return o; }));
+    const li = el("li", "row"); const b = el("button", "btn small danger", "Remove");
+    b.onclick = async () => { if (await ask("Remove " + k.ssid + "?", [para("The Edge stops joining this network and deletes its password.")], "Remove", true) && await run({ cmd: "wifi_remove", ssid: k.ssid }, "Removed")) refreshWifi(); };
+    const g = el("div", "grow"); g.append(el("div", "t", k.ssid), el("div", "s", k.has_password ? "password saved" : "open network"));
+    li.append(g, b); return li;
+  }) : [el("li", "cap", "No networks yet. The Edge runs its own network until one is added.")]));
   $("#nearList").replaceChildren(...(j.nearby.length ? j.nearby.map((n) => {
-    const li = el("li", "row"); const b = el("button", "", n.known ? "Saved" : "Use"); b.style.flex = "0 0 auto"; b.disabled = n.known;
+    const li = el("li", "row"); const b = el("button", "btn small", n.known ? "Saved" : "Use"); b.disabled = n.known;
     b.onclick = () => { $("#netSsid").value = n.ssid; $("#netPass").value = ""; $("#netPass").focus(); };
-    const label = el("span"); label.append(el("strong", "", n.ssid), el("div", "small muted", n.rssi + " dBm · ch " + n.channel + " · " + n.auth + (n.age_s > 30 ? " · heard " + ago(n.age_s * 1000) : "")));
-    li.append(label, b); return li;
-  }) : [el("li", "muted", j.scanning ? "Listening..." : "No networks heard yet. Try Scan nearby.")]));
+    const g = el("div", "grow"); g.append(el("div", "t", n.ssid), el("div", "s", n.rssi + " dBm · ch " + n.channel + " · " + n.auth + (n.age_s > 30 ? " · heard " + ago(n.age_s * 1000) : "")));
+    li.append(g, b); return li;
+  }) : [el("li", "cap", j.scanning ? "Listening..." : "No networks heard yet. Try Scan nearby.")]));
   if (scan === "list-only") return j;
-  if (config) $("#linkMode").value = config.link;
+  if (S.config) $("#linkMode").value = S.config.link;
   const acc = await run({ cmd: "access" });
-  if (acc) kv("#apKv", [["Edge network", acc.ap_ssid], ["Edge network password", acc.ap_password], ["Edge address on it", "http://192.168.4.1"]]);
+  if (acc) kv("#apKv", [["Edge network", acc.ap_ssid], ["Edge network password", acc.ap_password], ["Address on it", "http://192.168.4.1"], ["On a shared network", S.info ? "http://" + S.info.mdns_host : "-"]]);
   return j;
 }
 $("#netScan").onclick = async () => {
   const b = $("#netScan"); b.disabled = true; b.textContent = "Scanning...";
-  $("#scanNote").textContent = "Listening on each channel; this takes up to 20 seconds. If this device is on the Edge's own Wi-Fi, the page may pause for a moment.";
+  $("#scanNote").textContent = "Listening on each channel; this takes up to 20 seconds. If this device is on the Edge's own network, the page may pause for a moment.";
   let j = await refreshWifi(true);
   for (let i = 0; i < 12 && j && j.scanning; i++) { await sleep(2500); j = await refreshWifi("list-only"); }
   b.disabled = false; b.textContent = "Scan nearby";
@@ -484,89 +1037,710 @@ $("#netAdd").onclick = async () => {
   const ssid = $("#netSsid").value.trim(); if (!ssid) return;
   if (await run({ cmd: "wifi_add", ssid, password: $("#netPass").value }, "Saved. The Edge will try it now.")) { $("#netSsid").value = ""; $("#netPass").value = ""; refreshWifi(); }
 };
-$("#linkSave").onclick = async () => { const j = await run({ cmd: "set_config", config: { link: $("#linkMode").value } }, "Link mode saved. This page may need to reconnect."); if (j) config = j.config; };
+$("#linkSave").onclick = async () => {
+  const v = $("#linkMode").value;
+  if (!await ask("Change the Wi-Fi link?", [para("This page may lose its connection while the Edge switches. Reconnect to the Edge's network or your own network afterwards.")], "Change")) return;
+  const j = await run({ cmd: "set_config", config: { link: v } }, "Link mode saved"); if (j) S.config = j.config;
+};
 
-/* ---------- settings ---------- */
+/* ---------------------------------------------------------------- settings */
 function chanRow(c, i) {
-  const d = el("div", "row"); d.dataset.i = i;
-  const n = el("input"); n.maxLength = 11; n.placeholder = i === 0 ? "empty = preset name (e.g. LongFast)" : "channel name"; n.value = c.name; n.className = "cname";
-  const k = el("input", "mono ckey"); k.value = c.psk;
-  const r = el("button", "danger", "Remove"); r.style.flex = "0 0 auto"; r.disabled = i === 0; r.onclick = () => d.remove();
-  d.append(n, k, r); return d;
+  const d = el("div", "fields"); d.style.alignItems = "center";
+  const n = el("input", "cname"); n.maxLength = 11; n.placeholder = i === 0 ? "empty = preset name (LongFast)" : "channel name"; n.value = c.name; n.style.marginTop = "6px"; n.setAttribute("aria-label", "Channel " + i + " name");
+  const k = el("input", "mono ckey"); k.value = c.psk; k.style.marginTop = "6px"; k.setAttribute("aria-label", "Channel " + i + " key");
+  const p = el("select", "cprec"); p.style.marginTop = "6px"; p.setAttribute("aria-label", "Channel " + i + " position precision");
+  [0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32].forEach((b) => { const o = el("option", "", b === 0 ? "Position: not sent" : "Position: " + precText(b)); o.value = b; p.append(o); });
+  p.value = String(c.position_precision ?? 32);
+  if (![...p.options].some((o) => o.value === p.value)) { const o = el("option", "", "Position: " + precText(+p.value)); o.value = p.value; p.append(o); p.value = String(c.position_precision); }
+  const r = el("button", "btn small danger", "Remove"); r.disabled = i === 0; r.style.marginTop = "6px"; r.onclick = () => d.remove();
+  d.append(n, k, p, r); return d;
+}
+function posNote() {
+  const v = S.posMode;
+  $("#mPosNote").textContent = v === "fixed" ? "The Edge sends the position below." : v === "client" ? "The Sotreus app hands the Edge its position; nothing is sent until it does." : "The Edge sends no position.";
+  ["#mPosLat", "#mPosLon", "#mPosAlt"].forEach((x) => { $(x).disabled = v !== "fixed"; });
+}
+$$("#mPosMode button").forEach((b) => b.onclick = () => { S.posMode = b.dataset.v; $$("#mPosMode button").forEach((x) => x.setAttribute("aria-checked", x === b)); posNote(); });
+function renderIgnore(list) {
+  $("#ignoreList").replaceChildren(...(list.length ? list.map((id) => {
+    const li = el("li", "row"), g = el("div", "grow"), b = el("button", "btn small", "Stop ignoring");
+    g.append(el("div", "t", nodeLong(id)), el("div", "s", id));
+    b.onclick = async () => { if (await run({ cmd: "mesh_node", id, ignored: false }, "No longer ignored")) fillSettings(); };
+    li.append(g, b); return li;
+  }) : [el("li", "cap", "None. Ignore a node from its details on the Mesh tab.")]));
 }
 async function fillSettings() {
-  if (!regions.length) { const j = await run({ cmd: "regions" }); if (j) { regions = j.regions; presets = j.presets; } }
-  const j = await run({ cmd: "get_config" }); if (!j) return; config = j.config;
-  const a = config.awareness;
+  if (!S.regions.length) { const j = await run({ cmd: "regions" }); if (j) { S.regions = j.regions; S.presets = j.presets; } }
+  const j = await run({ cmd: "get_config" }); if (!j) return; S.config = j.config;
+  const a = S.config.awareness;
   $("#sBle").checked = a.ble; $("#sBleActive").checked = a.ble_active; $("#sAps").checked = a.wifi_aps; $("#sProbes").checked = a.wifi_probes; $("#sProbeNames").checked = a.probe_names;
-  $("#sFloor").value = a.rssi_floor; $("#sClose").value = a.close_after_s; $("#sWin").value = a.max_window_s; $("#sDisp").value = config.display.timeout_s;
-  const m = config.mesh;
-  $("#mRegion").replaceChildren(...["UNSET", ...regions].map((r) => { const o = el("option", "", r === "UNSET" ? "Not set (radio silent)" : r); o.value = r; return o; }));
+  $("#sFloor").value = a.rssi_floor; $("#sClose").value = a.close_after_s; $("#sWin").value = a.max_window_s; $("#sDisp").value = S.config.display.timeout_s;
+  const m = S.config.mesh;
+  $("#mRegion").replaceChildren(...["UNSET", ...S.regions].map((r) => { const o = el("option", "", r === "UNSET" ? "Not set (radio silent)" : r); o.value = r; return o; }));
   $("#mRegion").value = m.region;
-  $("#mPreset").replaceChildren(...presets.map((p) => { const o = el("option", "", p); o.value = p; return o; }));
+  $("#mPreset").replaceChildren(...S.presets.map((p) => { const o = el("option", "", p); o.value = p; return o; }));
   $("#mPreset").value = m.preset;
   $("#mLong").value = m.long_name; $("#mShort").value = m.short_name; $("#mHops").value = m.hop_limit; $("#mPower").value = m.tx_power; $("#mRebroadcast").value = m.rebroadcast;
+  $("#mRole").value = m.role || "CLIENT"; $("#mNodeInfo").value = m.nodeinfo_interval_s ?? 10800;
   $("#chanRows").replaceChildren(...m.channels.map(chanRow));
-  $("#msgCh").replaceChildren(...m.channels.map((c, i) => { const o = el("option", "", i + (c.name ? " " + c.name : " primary")); o.value = i; return o; }));
+  const pos = m.position || { mode: "off" };
+  S.posMode = pos.mode; $$("#mPosMode button").forEach((x) => x.setAttribute("aria-checked", x.dataset.v === pos.mode));
+  $("#mPosLat").value = pos.lat ?? ""; $("#mPosLon").value = pos.lon ?? ""; $("#mPosAlt").value = pos.alt ?? 0; $("#mPosInt").value = pos.interval_s ?? 900; posNote();
+  $("#mTelInt").value = m.telemetry_interval_s ?? 1800;
+  const nb = m.neighbor_info || {}; $("#mNb").checked = !!nb.enabled; $("#mNbInt").value = nb.interval_s ?? 21600;
+  $("#mRange").value = m.range_test_interval_s ?? 0;
+  const px = m.paxcounter || {}; $("#mPax").checked = !!px.enabled; $("#mPaxInt").value = px.interval_s ?? 900;
+  const dt = m.detection || {}; $("#mDet").checked = !!dt.enabled; $("#mDetName").value = dt.name || ""; $("#mDetGpio").value = dt.gpio ?? -1; $("#mDetMin").value = dt.min_interval_s ?? 45; $("#mDetHigh").checked = !!dt.active_high;
+  const nt = m.notify || {}; $("#mNotify").value = nt.mode || "off"; $("#mNotifyGpio").value = nt.gpio ?? -1;
+  const se = m.serial || {}; $("#mSer").checked = !!se.enabled; $("#mSerRx").value = se.rx ?? -1; $("#mSerTx").value = se.tx ?? -1; $("#mSerBaud").value = se.baud || 115200;
+  $("#mCanned").value = (m.canned || []).join("\n");
+  const lo = m.lora || {}; $("#mFreqOff").value = lo.freq_offset_hz ?? 0; $("#mFreqOver").value = lo.override_freq_mhz ?? 0;
+  $("#mTx").checked = lo.tx_enabled !== false; $("#mRxBoost").checked = !!lo.rx_boosted; $("#mDuty").checked = !!lo.override_duty_cycle;
+  $("#mIgnMqtt").checked = !!lo.ignore_mqtt; $("#mOkMqtt").checked = !!lo.ok_to_mqtt; $("#mLicensed").checked = !!m.licensed;
+  renderIgnore(m.ignore || []);
   $("#nodeIdNote").textContent = "Mesh node ID " + m.node_id + ". It is random and not derived from any hardware address.";
+  if (S.info) kv("#aboutKv", [["Product", "Sotreus Edge · sotreus.com"], ["Made by", (S.info.vendor || "NetSepio LLC") + " · netsepio.com"], ["Firmware", S.info.fw + " (ESP-IDF " + S.info.idf + ")"], ["Hardware", S.info.hw], ["Device", S.info.suffix + " · boot " + S.info.boot]]);
+  CtxSettings.fill();
 }
-$("#chanAdd").onclick = () => { const n = $("#chanRows").children.length; if (n < 4) $("#chanRows").append(chanRow({ name: "", psk: "default" }, n)); };
+$("#chanAdd").onclick = () => { const n = $("#chanRows").children.length; if (n < 8) $("#chanRows").append(chanRow({ name: "", psk: "default", position_precision: 32 }, n)); else toast("At most 8 channels"); };
+function meshSettings() {
+  const num = (id) => +$(id).value;
+  const pos = { mode: S.posMode || "off", interval_s: num("#mPosInt") };
+  if (pos.mode === "fixed") {
+    const lat = parseFloat($("#mPosLat").value), lon = parseFloat($("#mPosLon").value);
+    if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) throw new Error("Enter the fixed position's latitude and longitude");
+    Object.assign(pos, { lat, lon, alt: num("#mPosAlt") });
+  }
+  const canned = $("#mCanned").value.split("\n").map((t) => t.trim()).filter(Boolean);
+  if (canned.length > 8) throw new Error("At most 8 quick messages");
+  if (canned.some((t) => new TextEncoder().encode(t).length > 39)) throw new Error("Quick messages are at most 39 bytes each");
+  return { region: $("#mRegion").value, preset: $("#mPreset").value, long_name: $("#mLong").value.trim(), short_name: $("#mShort").value.trim(), hop_limit: num("#mHops"), tx_power: num("#mPower"),
+    rebroadcast: $("#mRebroadcast").value, role: $("#mRole").value, nodeinfo_interval_s: num("#mNodeInfo"), licensed: $("#mLicensed").checked,
+    channels: [...$("#chanRows").children].map((d) => ({ name: d.querySelector(".cname").value.trim(), psk: d.querySelector(".ckey").value.trim() || "default", position_precision: +d.querySelector(".cprec").value })),
+    position: pos, telemetry_interval_s: num("#mTelInt"),
+    neighbor_info: { enabled: $("#mNb").checked, interval_s: num("#mNbInt") }, range_test_interval_s: num("#mRange"),
+    paxcounter: { enabled: $("#mPax").checked, interval_s: num("#mPaxInt") },
+    detection: { enabled: $("#mDet").checked, name: $("#mDetName").value.trim(), gpio: num("#mDetGpio"), min_interval_s: num("#mDetMin"), active_high: $("#mDetHigh").checked },
+    notify: { mode: $("#mNotify").value, gpio: num("#mNotifyGpio") },
+    serial: { enabled: $("#mSer").checked, rx: num("#mSerRx"), tx: num("#mSerTx"), baud: num("#mSerBaud") },
+    canned,
+    lora: { freq_offset_hz: num("#mFreqOff"), override_freq_mhz: parseFloat($("#mFreqOver").value) || 0, tx_enabled: $("#mTx").checked, rx_boosted: $("#mRxBoost").checked,
+      override_duty_cycle: $("#mDuty").checked, ignore_mqtt: $("#mIgnMqtt").checked, ok_to_mqtt: $("#mOkMqtt").checked } };
+}
 $("#saveSettings").onclick = async () => {
-  const channels = [...$("#chanRows").children].map((d) => ({ name: d.querySelector(".cname").value.trim(), psk: d.querySelector(".ckey").value.trim() || "default" }));
-  const c = {
-    awareness: { ble: $("#sBle").checked, ble_active: $("#sBleActive").checked, wifi_aps: $("#sAps").checked, wifi_probes: $("#sProbes").checked, probe_names: $("#sProbeNames").checked,
-      rssi_floor: +$("#sFloor").value, close_after_s: +$("#sClose").value, max_window_s: +$("#sWin").value },
-    display: { timeout_s: +$("#sDisp").value },
-    mesh: { region: $("#mRegion").value, preset: $("#mPreset").value, long_name: $("#mLong").value.trim(), short_name: $("#mShort").value.trim(),
-      hop_limit: +$("#mHops").value, tx_power: +$("#mPower").value, rebroadcast: $("#mRebroadcast").value, channels },
-  };
+  const mesh = S.status && S.status.mode === "mesh";
+  const c = { display: { timeout_s: +$("#sDisp").value } };
+  if (!mesh) c.awareness = { ble: $("#sBle").checked, ble_active: $("#sBleActive").checked, wifi_aps: $("#sAps").checked, wifi_probes: $("#sProbes").checked, probe_names: $("#sProbeNames").checked, rssi_floor: +$("#sFloor").value, close_after_s: +$("#sClose").value, max_window_s: +$("#sWin").value };
+  else {
+    try { c.mesh = meshSettings(); } catch (e) { toast(e.message); return; }
+    const was = S.config.mesh;
+    if (c.mesh.licensed && !was.licensed && !await ask("Turn on licensed mode?", [para("Every channel is sent without encryption, and private direct messages stop. Use it only with an amateur radio licence, with your call sign as the long name.")], "Turn on", true)) return;
+    if (c.mesh.lora.override_duty_cycle && !(was.lora || {}).override_duty_cycle && !await ask("Ignore the duty-cycle limit?", [para("The region's limit on transmit time exists in law in many places. Turn this on only where your licence allows it.")], "Ignore limit", true)) return;
+  }
   const j = await run({ cmd: "set_config", config: c }, "Settings saved");
-  if (j) { config = j.config; fillSettings(); refreshStatus(); }
+  if (j) { S.config = j.config; S.chanUrl = ""; fillSettings(); refreshStatus(); }
 };
-function confirmRun(question, body, okMsg) { if (confirm(question)) return run(body, okMsg); return Promise.resolve(null); }
-$("#newPin").onclick = async () => { const j = await confirmRun("Create a new setup PIN? Every open session, including this one, will need it.", { cmd: "new_pin" }); if (j) { alert("New PIN: " + j.pin); lock(); } };
-$("#newNode").onclick = async () => { const j = await confirmRun("Pick a new random mesh node ID? Other nodes will see this Edge as a new node.", { cmd: "mesh_new_identity" }); if (j) { toast("New node ID " + j.node_id); fillSettings(); } };
-$("#reboot").onclick = () => confirmRun("Restart the Edge?", { cmd: "reboot" }, "Restarting");
-$("#eraseLog").onclick = () => confirmRun("Erase every record stored on the Edge? Records not yet synced to a phone are lost.", { cmd: "log_erase", confirm: true }, "Erasing records in the background");
-$("#forget").onclick = () => confirmRun("Remove every paired phone? Pairing opens again afterwards.", { cmd: "ble_forget_all", confirm: true }, "Paired phones removed");
-$("#factory").onclick = () => confirmRun("Erase all settings, Wi-Fi networks, pairings and records, then restart?", { cmd: "factory_reset", confirm: true }, "Erasing and restarting");
+async function confirmRun(title, text, body, okMsg, label, danger) { if (await ask(title, [para(text)], label || "Confirm", danger)) return run(body, okMsg); return null; }
+$("#newPin").onclick = async () => { const j = await confirmRun("New setup PIN?", "Every open session, including this one, will need the new PIN.", { cmd: "new_pin" }, null, "Create PIN"); if (j) { await ask("New PIN", [el("p", "mono", j.pin), para("It is also on the Edge's ACCESS screen.")], "Done"); lock(); } };
+$("#newNode").onclick = async () => { const j = await confirmRun("New mesh identity?", "Other nodes will see this Edge as a new node with a new random ID.", { cmd: "mesh_new_identity" }, null, "Create identity"); if (j) { toast("New node ID " + j.node_id); fillSettings(); } };
+$("#reboot").onclick = () => confirmRun("Restart the Edge?", "It is back in about 10 seconds. This page reconnects by itself.", { cmd: "reboot" }, "Restarting", "Restart");
+$("#eraseLog").onclick = () => confirmRun("Erase all records?", "Records not yet synced to a phone are lost. Record numbers are never reused.", { cmd: "log_erase", confirm: true }, "Erasing records in the background", "Erase", true);
+$("#forget").onclick = () => confirmRun("Forget paired phones?", "Every paired phone is removed and pairing opens again.", { cmd: "ble_forget_all", confirm: true }, "Paired phones removed", "Forget", true);
+$("#factory").onclick = () => confirmRun("Factory reset?", "Erases all settings, Wi-Fi networks, pairings, the device identity and every record, then restarts.", { cmd: "factory_reset", confirm: true }, "Erasing and restarting", "Erase everything", true);
 $("#fwUpload").onclick = async () => {
   const f = $("#fwFile").files[0]; if (!f) { toast("Choose a .bin file first"); return; }
-  if (!confirm("Upload " + f.name + " (" + Math.round(f.size / 1024) + " KB) and restart?")) return;
+  if (!await ask("Update firmware?", [para("Upload " + f.name + " (" + Math.round(f.size / 1024) + " KB) and restart into it.")], "Upload")) return;
   $("#fwNote").textContent = "Uploading...";
   const headers = { "Authorization": "Bearer " + token, "Content-Type": "application/octet-stream" };
   const sha = $("#fwSha").value.trim(); if (sha) headers["X-SHA256"] = sha;
-  try {
-    const r = await fetch("/api/ota", { method: "POST", headers, body: f }); const j = await r.json();
-    $("#fwNote").textContent = j.ok ? "Done (SHA-256 " + j.sha256 + "). Restarting." : (j.error || "Update failed");
-  } catch (e) { $("#fwNote").textContent = "Upload interrupted."; }
+  try { const r = await fetch("/api/ota", { method: "POST", headers, body: f }); const j = await r.json(); $("#fwNote").textContent = j.ok ? "Done (SHA-256 " + j.sha256 + "). Restarting." : (j.error || "Update failed"); }
+  catch (e) { $("#fwNote").textContent = "Upload interrupted."; }
 };
 
-/* ---------- live events ---------- */
-function setLive(state) { const p = $("#livePill"); p.className = "pill " + (state === "live" ? "on" : "warn"); p.lastChild.textContent = state; }
+/* ================================================================ CONTEXT */
+const Geo = {
+  R: 6371.0088,
+  rad: (d) => d * Math.PI / 180,
+  dist(a, b) { const dLat = this.rad(b.lat - a.lat), dLon = this.rad(b.lon - a.lon); const h = Math.sin(dLat / 2) ** 2 + Math.cos(this.rad(a.lat)) * Math.cos(this.rad(b.lat)) * Math.sin(dLon / 2) ** 2; return 2 * this.R * Math.asin(Math.sqrt(h)); },
+  around(p, km) { const dLat = km / 111.32, dLon = km / (111.32 * Math.max(Math.cos(this.rad(p.lat)), 0.01)); return { latMin: p.lat - dLat, lonMin: p.lon - dLon, latMax: p.lat + dLat, lonMax: p.lon + dLon }; },
+  coarse(p) { const a = Math.floor(p.lat), o = Math.floor(p.lon); return { latMin: Math.max(a - 1, -90), lonMin: Math.max(o - 1, -180), latMax: Math.min(a + 2, 90), lonMax: Math.min(o + 2, 180) }; },
+  cell(p, step) { const c = (v) => +(Math.floor(v / step) * step + step / 2).toFixed(2); return { lat: c(p.lat), lon: c(p.lon) }; },
+  circle(p, km, n = 64) { const out = []; for (let i = 0; i <= n; i++) { const t = 2 * Math.PI * i / n; out.push([p.lon + km / (111.32 * Math.max(Math.cos(this.rad(p.lat)), 0.01)) * Math.cos(t), p.lat + km / 111.32 * Math.sin(t)]); } return out; },
+};
+const NWS_AREAS = ["AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","PR","GU","AS","VI","MP"];
+const CTX_DEFAULT = { enabled: true, area: null, relay: "", satellites: { on: true, groups: ["resource", "weather", "stations"] }, earthquakes: { on: false, radius_km: 300 }, hazards: { on: false }, gdacs: { on: false }, air: "off", warnings: { on: false, region: "" }, aircraft: { on: false, radius_km: 50 } };
+const METEOALARM = ["austria", "belgium", "bosnia-herzegovina", "bulgaria", "croatia", "cyprus", "czechia", "denmark", "estonia", "finland", "france", "germany", "greece", "hungary", "iceland", "ireland", "israel", "italy", "latvia", "lithuania", "luxembourg", "malta", "moldova", "montenegro", "netherlands", "norway", "poland", "portugal", "republic-of-north-macedonia", "romania", "serbia", "slovakia", "slovenia", "spain", "sweden", "switzerland", "ukraine", "united-kingdom"];
+const clip = (t, n) => (t && t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t);
+const titleCase = (slug) => slug.split("-").map((w) => w === "of" ? w : w[0].toUpperCase() + w.slice(1)).join(" ");
+function relayHost() { try { return S.ctx && S.ctx.relay ? new URL(S.ctx.relay).host : ""; } catch (e) { return ""; } }
+function ctxMerge(c) {
+  const d = JSON.parse(JSON.stringify(CTX_DEFAULT));
+  if (!c) return d;
+  for (const k of Object.keys(d)) {
+    if (c[k] === undefined) continue;
+    d[k] = d[k] && typeof d[k] === "object" && !Array.isArray(d[k]) && c[k] && typeof c[k] === "object" ? Object.assign(d[k], c[k]) : c[k];
+  }
+  return d;
+}
+async function saveCtx(msg) { const j = await run({ cmd: "ctx_set", ctx: S.ctx }, msg); applyVisibility(); CtxSettings.leaves(); return j; }
+
+const CtxSettings = {
+  segSet(id, v) { $$("#" + id + " button").forEach((b) => b.setAttribute("aria-checked", b.dataset.v === String(v))); },
+  fill() {
+    const c = S.ctx; if (!c) return;
+    $("#cEnabled").checked = c.enabled !== false;
+    $("#cLat").value = c.area ? c.area.lat : ""; $("#cLon").value = c.area ? c.area.lon : "";
+    $("#cSat").checked = c.satellites.on;
+    $("#cSatResource").checked = c.satellites.groups.includes("resource"); $("#cSatWeather").checked = c.satellites.groups.includes("weather"); $("#cSatStations").checked = c.satellites.groups.includes("stations");
+    $("#cQuakes").checked = c.earthquakes.on; this.segSet("cQuakeRadius", c.earthquakes.radius_km);
+    $("#cHazards").checked = c.hazards.on; this.segSet("cAirQ", c.air);
+    $("#cGdacs").checked = c.gdacs.on; $("#cPlanes").checked = c.aircraft.on; this.segSet("cPlaneRadius", c.aircraft.radius_km);
+    $("#cRelay").value = c.relay || "";
+    $("#cGeoArea").classList.toggle("hidden", !(window.isSecureContext && navigator.geolocation));
+    $("#cWarn").checked = c.warnings.on;
+    const sel = $("#cWarnRegion");
+    if (!sel.options.length) {
+      const none = el("option", "", "None"); none.value = "";
+      const us = el("optgroup"); us.label = "United States (NWS)"; NWS_AREAS.forEach((a) => { const o = el("option", "", a); o.value = "nws:" + a; us.append(o); });
+      const eu = el("optgroup"); eu.label = "Europe (MeteoAlarm, needs the relay)"; METEOALARM.forEach((a) => { const o = el("option", "", titleCase(a)); o.value = "ma:" + a; eu.append(o); });
+      sel.append(none, us, eu);
+    }
+    sel.value = /^(nws|ma):/.test(c.warnings.region || "") ? c.warnings.region : "";
+    this.leaves();
+  },
+  leaves() {
+    const c = S.ctx; if (!c) return;
+    const on = c.enabled !== false;
+    kv("#cLeaves", [
+      ["To OpenFreeMap", on ? "Map tiles for the part of the map you look at, while Context is open" : "Nothing"],
+      ["To USGS", on && c.earthquakes.on ? "Nothing; the world list every 10 min while Context is open" : "Nothing"],
+      ["To NASA EONET", on && c.hazards.on ? "Nothing; the world list every 30 min while Context is open" : "Nothing"],
+      ["To Open-Meteo", on && c.air !== "off" ? "A " + (c.air === "fine" ? "0.1°" : "0.5°") + " cell centre, once an hour while Context is open" : "Nothing"],
+      ["To CelesTrak", on && c.satellites.on ? "The group names, twice a day" : "Nothing"],
+      ["To NWS", on && c.warnings.on && (c.warnings.region || "").startsWith("nws:") ? "The state code, every 30 min while Context is open" : "Nothing"],
+      ["To the relay" + (relayHost() ? " (" + relayHost() + ")" : ""), on && c.relay ? [
+        c.aircraft.on ? "a 0.5° grid point every minute while Aircraft is open" : null,
+        c.warnings.on && (c.warnings.region || "").startsWith("ma:") ? "the MeteoAlarm country every 30 min" : null,
+        c.gdacs.on ? "nothing about you for GDACS (world list every 30 min)" : null].filter(Boolean).join("; ") || "Nothing" : "Nothing (no relay set)"],
+      ["To GeoJS", "Your internet address, only when you press Use approximate area"],
+    ]);
+    $("#cLeaves").append(el("p", "cap", "Every request goes from this browser. The Edge itself makes no internet requests for Context."));
+  },
+  bind() {
+    const set = async (fn, msg) => { fn(S.ctx); CtxSettings.fill(); await saveCtx(msg || "Context settings saved"); Ctx.invalidate(); };
+    $("#cEnabled").onchange = (e) => set((c) => { c.enabled = e.target.checked; });
+    const area = () => { const lat = parseFloat($("#cLat").value), lon = parseFloat($("#cLon").value); if (isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) set((c) => { c.area = { lat: Math.round(lat * 10) / 10, lon: Math.round(lon * 10) / 10 }; }, "Area saved"); };
+    $("#cLat").onchange = area; $("#cLon").onchange = area;
+    $("#cSat").onchange = (e) => set((c) => { c.satellites.on = e.target.checked; });
+    [["cSatResource", "resource"], ["cSatWeather", "weather"], ["cSatStations", "stations"]].forEach(([id, g]) => $("#" + id).onchange = (e) => set((c) => { c.satellites.groups = c.satellites.groups.filter((x) => x !== g); if (e.target.checked) c.satellites.groups.push(g); }));
+    $("#cQuakes").onchange = (e) => set((c) => { c.earthquakes.on = e.target.checked; });
+    $$("#cQuakeRadius button").forEach((b) => b.onclick = () => set((c) => { c.earthquakes.radius_km = +b.dataset.v; }));
+    $("#cHazards").onchange = (e) => set((c) => { c.hazards.on = e.target.checked; });
+    $$("#cAirQ button").forEach((b) => b.onclick = () => set((c) => { c.air = b.dataset.v; }));
+    $("#cWarn").onchange = (e) => set((c) => { c.warnings.on = e.target.checked; });
+    $("#cGdacs").onchange = (e) => set((c) => { c.gdacs.on = e.target.checked; });
+    $("#cPlanes").onchange = (e) => set((c) => { c.aircraft.on = e.target.checked; });
+    $$("#cPlaneRadius button").forEach((b) => b.onclick = () => set((c) => { c.aircraft.radius_km = +b.dataset.v; }));
+    $("#cRelay").onchange = (e) => {
+      const v = e.target.value.trim().replace(/\/+$/, "");
+      if (v && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(v)) { toast("The relay address must start with https://"); e.target.value = S.ctx.relay || ""; return; }
+      set((c) => { c.relay = v; }, v ? "Relay saved" : "Relay removed");
+    };
+    $("#cIpArea").onclick = () => useApproxArea();
+    $("#cGeoArea").onclick = () => useDeviceArea();
+    $("#cWarnRegion").onchange = (e) => set((c) => { c.warnings.region = e.target.value; });
+  },
+};
+CtxSettings.bind();
+async function setArea(lat, lon, msg) {
+  S.ctx.area = { lat: Math.round(lat * 10) / 10, lon: Math.round(lon * 10) / 10 };
+  await saveCtx(msg + ": " + S.ctx.area.lat + "°, " + S.ctx.area.lon + "°");
+  CtxSettings.fill(); Ctx.invalidate();
+}
+async function useApproxArea() {
+  try {
+    const j = await Ctx.getJson("https://get.geojs.io/v1/ip/geo.json");
+    const lat = parseFloat(j.latitude), lon = parseFloat(j.longitude);
+    if (!isFinite(lat) || !isFinite(lon)) throw new Error("GeoJS did not know this address");
+    await setArea(lat, lon, "Approximate area" + (j.city ? " near " + j.city : j.country ? " in " + j.country : ""));
+  } catch (e) { toast("Approximate area unavailable: " + e.message); }
+}
+function useDeviceArea() {
+  navigator.geolocation.getCurrentPosition((p) => setArea(p.coords.latitude, p.coords.longitude, "Area set from this device"),
+    (e) => toast("Location unavailable: " + e.message), { enableHighAccuracy: false, maximumAge: 600e3, timeout: 15000 });
+}
+
+const Ctx = {
+  STYLE: "https://tiles.openfreemap.org/styles/dark",
+  libs: null, map: null, mapReady: false, picking: false, isOpen: false, sub: "env", timer: null,
+  src: {}, charts: {}, satList: null, passes: null,
+  interval: { quakes: 600e3, hazards: 1800e3, gdacs: 1800e3, air: 3600e3, warnings: 1800e3, sats: 12 * 3600e3, planes: 60e3 },
+  area() { return S.ctx && S.ctx.area; },
+  loadLibs() {
+    if (this.libs) return this.libs;
+    const css = (h) => new Promise((ok) => { const l = el("link"); l.rel = "stylesheet"; l.href = h; l.onload = ok; l.onerror = ok; document.head.append(l); });
+    const js = (s) => new Promise((ok, bad) => { const t = el("script"); t.src = s; t.onload = ok; t.onerror = () => bad(new Error("Could not load " + s)); document.head.append(t); });
+    this.libs = Promise.all([css("/assets/maplibre-gl-4.7.1.css"), css("/assets/uplot-1.6.31.min.css"), js("/assets/maplibre-gl-4.7.1.js"), js("/assets/uplot-1.6.31.min.js"), js("/assets/satellite-5.0.0.min.js")]);
+    this.libs.catch(() => { this.libs = null; });
+    return this.libs;
+  },
+  async open() {
+    this.isOpen = true;
+    try { await this.loadLibs(); } catch (e) { toast(e.message); return; }
+    if (!this.isOpen) return;
+    if (!this.map) this.initMap(); else this.map.resize();
+    this.renderAll();
+    this.tick(true);
+    clearInterval(this.timer); this.timer = setInterval(() => this.tick(false), 15000);
+  },
+  close() { this.isOpen = false; clearInterval(this.timer); this.timer = null; if (this.picking) this.setPicking(false); },
+  invalidate() { this.src = {}; this.passes = null; if (this.isOpen) { this.renderAll(); this.drawMap(); this.centerOnArea(); this.tick(true); } },
+  initMap() {
+    const a = this.area();
+    this.map = new maplibregl.Map({ container: "ctxMap", style: this.STYLE, center: a ? [a.lon, a.lat] : [10, 20], zoom: a ? 6 : 1.4, attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false });
+    this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    this.map.on("load", () => {
+      const empty = { type: "FeatureCollection", features: [] };
+      ["radius", "cell", "quakes", "hazards", "gdacs", "planes", "sats"].forEach((id) => this.map.addSource(id, { type: "geojson", data: empty }));
+      this.map.addLayer({ id: "radius", type: "line", source: "radius", paint: { "line-color": "#A3A7AE", "line-width": 1, "line-dasharray": [2, 2] } });
+      this.map.addLayer({ id: "cell", type: "fill", source: "cell", paint: { "fill-color": "#E9E6DF", "fill-opacity": 0.08 } });
+      this.map.addLayer({ id: "cell-line", type: "line", source: "cell", paint: { "line-color": "#E9E6DF", "line-width": 1.2 } });
+      this.map.addLayer({ id: "quakes", type: "circle", source: "quakes", paint: { "circle-color": "#6CB8F0", "circle-opacity": 0.35, "circle-stroke-color": "#6CB8F0", "circle-stroke-width": 1.2, "circle-radius": ["interpolate", ["linear"], ["get", "mag"], 2.5, 4, 5, 9, 7, 16] } });
+      this.map.addLayer({ id: "hazards", type: "circle", source: "hazards", paint: { "circle-color": "#0B0E13", "circle-stroke-color": "#6CB8F0", "circle-stroke-width": 2, "circle-radius": 8 } });
+      this.map.addLayer({ id: "gdacs", type: "circle", source: "gdacs", paint: { "circle-color": "#0B0E13", "circle-stroke-color": "#6CB8F0", "circle-stroke-width": 2, "circle-radius": 11 } });
+      this.map.addLayer({ id: "planes", type: "circle", source: "planes", paint: { "circle-color": "#6CB8F0", "circle-radius": 3.5, "circle-stroke-color": "#0B0E13", "circle-stroke-width": 1 } });
+      this.map.addLayer({ id: "planes-label", type: "symbol", source: "planes", layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"], "text-size": 10, "text-offset": [0, 1.1], "text-anchor": "top" }, paint: { "text-color": "#6CB8F0", "text-halo-color": "#0B0E13", "text-halo-width": 1 } });
+      this.map.addLayer({ id: "sats", type: "circle", source: "sats", paint: { "circle-color": "#B9A6FF", "circle-radius": 4, "circle-stroke-color": "#0B0E13", "circle-stroke-width": 1 } });
+      this.map.addLayer({ id: "sats-label", type: "symbol", source: "sats", layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"], "text-size": 10, "text-offset": [0, 1.1], "text-anchor": "top" }, paint: { "text-color": "#B9A6FF", "text-halo-color": "#0B0E13", "text-halo-width": 1 } });
+      this.mapReady = true;
+      this.drawMap();
+    });
+    this.map.on("click", async (e) => {
+      if (!this.picking) return;
+      S.ctx.area = { lat: Math.round(e.lngLat.lat * 10) / 10, lon: Math.round(e.lngLat.lng * 10) / 10 };
+      this.setPicking(false);
+      await saveCtx("Area set to " + S.ctx.area.lat + "°, " + S.ctx.area.lon + "°");
+      CtxSettings.fill(); this.invalidate();
+    });
+  },
+  setPicking(on) {
+    this.picking = on;
+    if (this.map) this.map.getCanvas().style.cursor = on ? "crosshair" : "";
+    $("#ctxPickBtn").textContent = on ? "Cancel" : "Set area on map";
+    $("#ctxPickHint").textContent = on ? "Tap the map where the Edge is used. The area is stored rounded to 0.1°." : "";
+  },
+  setGeo(id, features) { if (this.mapReady) this.map.getSource(id).setData({ type: "FeatureCollection", features }); },
+  pt(lon, lat, props) { return { type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] }, properties: props || {} }; },
+  drawMap() {
+    if (!this.mapReady) return;
+    const a = this.area(), c = S.ctx;
+    if (!a) { ["radius", "cell", "quakes", "hazards", "gdacs", "planes", "sats"].forEach((id) => this.setGeo(id, [])); return; }
+    this.setGeo("cell", [{ type: "Feature", geometry: { type: "Polygon", coordinates: [[[a.lon - .05, a.lat - .05], [a.lon + .05, a.lat - .05], [a.lon + .05, a.lat + .05], [a.lon - .05, a.lat + .05], [a.lon - .05, a.lat - .05]]] }, properties: {} }]);
+    const rings = [];
+    if (c.earthquakes.on && this.sub === "env") rings.push(Geo.circle(a, c.earthquakes.radius_km));
+    if (c.aircraft.on && this.sub === "planes") rings.push(Geo.circle(a, c.aircraft.radius_km));
+    this.setGeo("radius", rings.map((r) => ({ type: "Feature", geometry: { type: "LineString", coordinates: r }, properties: {} })));
+    const q = this.src.quakes && this.src.quakes.data;
+    this.setGeo("quakes", q && c.earthquakes.on ? q.near.map((x) => this.pt(x.lon, x.lat, { mag: x.mag })) : []);
+    const h = this.src.hazards && this.src.hazards.data;
+    this.setGeo("hazards", h && c.hazards.on ? h.near.map((x) => this.pt(x.lon, x.lat, {})) : []);
+    const g = this.src.gdacs && this.src.gdacs.data;
+    this.setGeo("gdacs", g && c.gdacs.on ? g.near.map((x) => this.pt(x.lon, x.lat, {})) : []);
+    const pl = this.src.planes && this.src.planes.data;
+    this.setGeo("planes", pl && c.aircraft.on && this.sub === "planes" ? pl.near.map((x) => this.pt(x.lon, x.lat, { name: x.name })) : []);
+    this.setGeo("sats", this.satNow().map((x) => this.pt(x.lon, x.lat, { name: x.name })));
+  },
+  centerOnArea() { const a = this.area(); if (a && this.map) this.map.easeTo({ center: [a.lon, a.lat], zoom: Math.max(this.map.getZoom(), 6) }); },
+
+  due(name) {
+    const s = this.src[name];
+    if (!s) return true;
+    if (s.busy) return false;
+    if (s.err) return Date.now() - s.failAt > 120e3;
+    return Date.now() - s.at > this.interval[name];
+  },
+  async fetchSrc(name, fn) {
+    const s = this.src[name] || (this.src[name] = {});
+    s.busy = true; this.renderAll();
+    try { s.data = await fn(); s.at = Date.now(); s.err = null; }
+    catch (e) { s.err = e.message || String(e); s.failAt = Date.now(); }
+    s.busy = false;
+    if (this.isOpen) { this.renderAll(); this.drawMap(); }
+  },
+  async getJson(url, opts) {
+    const c = new AbortController(); const t = setTimeout(() => c.abort(), 20000);
+    try {
+      const r = await fetch(url, Object.assign({ signal: c.signal, cache: "no-store" }, opts || {}));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const text = await r.text();
+      if (/html/i.test(r.headers.get("content-type") || "") || /^\s*</.test(text)) throw new Error("the source sent a web page instead of data; it does not allow requests from a browser");
+      return JSON.parse(text);
+    }
+    catch (e) { throw new Error(e.name === "AbortError" ? "timed out" : e.message); } finally { clearTimeout(t); }
+  },
+  async getText(url, opts, timeoutMs) {
+    const c = new AbortController(); const t = setTimeout(() => c.abort(), timeoutMs || 25000);
+    try {
+      const r = await fetch(url, Object.assign({ signal: c.signal, cache: "no-store" }, opts || {}));
+      if (!r.ok) { let m = "HTTP " + r.status; try { const j = await r.json(); if (j.error) m = j.error; } catch (e) {} throw new Error(m); }
+      return await r.text();
+    } catch (e) { throw new Error(e.name === "AbortError" ? "timed out" : e.message); } finally { clearTimeout(t); }
+  },
+  tick(force) {
+    const c = S.ctx, a = this.area();
+    if (!this.isOpen || !c || c.enabled === false || document.visibilityState !== "visible") return;
+    const go = (n, fn) => { if ((force && !(this.src[n] && this.src[n].busy) && !(this.src[n] && this.src[n].at)) || this.due(n)) this.fetchSrc(n, fn); };
+    if (c.satellites.on && c.satellites.groups.length) go("sats", () => this.loadSats());
+    if (!a) return;
+    if (c.earthquakes.on) go("quakes", () => this.loadQuakes());
+    if (c.hazards.on) go("hazards", () => this.loadHazards());
+    if (c.air !== "off") go("air", () => this.loadAir());
+    if (c.gdacs.on && c.relay) go("gdacs", () => this.loadGdacs());
+    if (c.warnings.on && c.warnings.region && (c.relay || !c.warnings.region.startsWith("ma:"))) go("warnings", () => this.loadWarnings());
+    if (c.aircraft.on && c.relay && this.sub === "planes") go("planes", () => this.loadPlanes());
+  },
+  relayUrl(path, params) {
+    const u = new URL(S.ctx.relay.replace(/\/+$/, "") + path);
+    Object.entries(params || {}).forEach(([k, v]) => u.searchParams.set(k, v));
+    return u.toString();
+  },
+  async loadPlanes() {
+    /* The relay is sent the centre of the 0.5° cell holding the area; the radius is widened to cover the area's own circle, then the list is filtered here. */
+    const a = this.area(), r = S.ctx.aircraft.radius_km, cell = Geo.cell(a, 0.5);
+    const nm = Math.min(100, Math.ceil((r + 40) / 1.852));
+    const j = await this.getJson(this.relayUrl("/aircraft", { lat: cell.lat.toFixed(2), lon: cell.lon.toFixed(2), radius_nm: nm }));
+    const near = (j.ac || []).filter((x) => x.lat != null && x.lon != null).map((x) => ({
+      hex: x.hex, name: (x.flight || "").trim() || x.r || x.hex, reg: x.r, type: x.t, lat: x.lat, lon: x.lon,
+      alt: x.alt_baro, gs: x.gs, seen: x.seen_pos ?? x.seen, km: Geo.dist(a, { lat: x.lat, lon: x.lon }) })).filter((x) => x.km <= r).sort((x, y) => x.km - y.km);
+    return { near };
+  },
+  async loadGdacs() {
+    /* GDACS world lists through the relay, kept nearby in this browser. */
+    const [maj, min] = await Promise.all([this.getJson(this.relayUrl("/gdacs", { list: "major" })), this.getJson(this.relayUrl("/gdacs", { list: "minor" })).catch(() => ({ features: [] }))]);
+    const RAD = { EQ: 500, TC: 1000, FL: 300, VO: 200, WF: 200, DR: 1000 };
+    const TN = { EQ: "Earthquake", TC: "Tropical cyclone", FL: "Flood", VO: "Volcano", WF: "Wildfire", DR: "Drought" };
+    const a = this.area(), seen = new Set(), near = [];
+    [...(maj.features || []), ...(min.features || [])].forEach((f) => {
+      const p = f.properties || {}, g = f.geometry;
+      if (!g || g.type !== "Point" || seen.has(p.eventtype + p.eventid)) return;
+      seen.add(p.eventtype + p.eventid);
+      const h = { name: p.name || p.eventname || TN[p.eventtype], type: TN[p.eventtype] || p.eventtype, level: p.alertlevel, from: Date.parse(p.fromdate), country: p.country,
+        severity: p.severitydata && p.severitydata.severitytext, url: p.url && p.url.report, lon: g.coordinates[0], lat: g.coordinates[1] };
+      h.km = Geo.dist(a, h);
+      if (h.km <= (RAD[p.eventtype] || 300)) near.push(h);
+    });
+    near.sort((x, y) => x.km - y.km);
+    return { near };
+  },
+  async loadQuakes() {
+    const j = await this.getJson("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson");
+    const a = this.area(), r = S.ctx.earthquakes.radius_km;
+    const all = (j.features || []).map((f) => ({ id: f.id, mag: f.properties.mag, place: f.properties.place, time: f.properties.time, url: f.properties.url, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], depth: f.geometry.coordinates[2] }));
+    const near = all.map((q) => Object.assign(q, { km: Geo.dist(a, q) })).filter((q) => q.km <= r).sort((x, y) => y.time - x.time);
+    return { near, total: all.length };
+  },
+  async loadHazards() {
+    /* NASA EONET open natural events: the world list, filtered to this area in the browser. */
+    const j = await this.getJson("https://eonet.gsfc.nasa.gov/api/v3/events?status=open&days=60&category=wildfires,severeStorms,volcanoes,floods,landslides");
+    const RAD = { wildfires: 100, severeStorms: 400, volcanoes: 100, floods: 200, landslides: 50 };
+    const a = this.area();
+    const near = [];
+    (j.events || []).forEach((e) => {
+      const g = (e.geometry || []).filter((x) => x.type === "Point").pop(); /* storms carry a track: use the latest point */
+      if (!g) return;
+      const cat = (e.categories && e.categories[0]) || {};
+      const h = { id: e.id, type: cat.id, typeName: cat.title || "Event", name: e.title, from: Date.parse((e.geometry[0] || {}).date),
+        url: (e.sources && e.sources[0] && e.sources[0].url) || e.link, lon: g.coordinates[0], lat: g.coordinates[1],
+        magnitude: g.magnitudeValue != null ? g.magnitudeValue + " " + (g.magnitudeUnit || "") : null };
+      h.km = Geo.dist(a, h);
+      if (h.km <= (RAD[h.type] || 200)) near.push(h);
+    });
+    near.sort((x, y) => x.km - y.km);
+    return { near };
+  },
+  /* Europe uses the European AQI scale; everywhere else the US AQI scale. */
+  inEurope(a) { return a && a.lat >= 34 && a.lat <= 72 && a.lon >= -25 && a.lon <= 45; },
+  async loadAir() {
+    const cell = Geo.cell(this.area(), S.ctx.air === "fine" ? 0.1 : 0.5);
+    const u = "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=" + cell.lat.toFixed(2) + "&longitude=" + cell.lon.toFixed(2) +
+      "&current=european_aqi,us_aqi,pm2_5,pm10,ozone,nitrogen_dioxide&hourly=european_aqi,us_aqi&forecast_days=2&timeformat=unixtime&timezone=auto";
+    const j = await this.getJson(u);
+    return { cell, cur: j.current || {}, hourly: j.hourly || {} };
+  },
+  async loadWarnings() {
+    const reg = S.ctx.warnings.region;
+    if (reg.startsWith("ma:")) {
+      const j = await this.getJson(this.relayUrl("/meteoalarm", { country: reg.slice(3) }));
+      const now = Date.now(), items = [];
+      (j.warnings || []).forEach((w) => {
+        const al = w.alert || {}, infos = al.info || [];
+        const i = infos.find((x) => /^en/i.test(x.language || "")) || infos[0];
+        if (!i || Date.parse(i.expires) < now) return;
+        items.push({ title: i.headline || i.event, event: i.event, severity: i.severity, area: clip((i.area || []).map((x) => x.areaDesc).join(", "), 160), until: Date.parse(i.expires), from: Date.parse(i.onset), url: i.web || "https://meteoalarm.org", sender: i.senderName });
+      });
+      items.sort((x, y) => (x.from || 0) - (y.from || 0));
+      return { issuer: "MeteoAlarm" + (items[0] && items[0].sender ? " · " + items[0].sender : ""), items };
+    }
+    if (!reg.startsWith("nws:")) return { issuer: "National Weather Service", items: [] };
+    const j = await this.getJson("https://api.weather.gov/alerts/active/area/" + reg.slice(4), { headers: { Accept: "application/geo+json" } });
+    return { issuer: "National Weather Service", items: (j.features || []).map((f) => { const p = f.properties; return { title: p.headline || p.event, event: p.event, area: p.areaDesc, severity: p.severity, until: Date.parse(p.expires || p.ends), url: p["@id"] || f.id }; }) };
+  },
+  async loadSats() {
+    const sats = [];
+    for (const g of S.ctx.satellites.groups) {
+      const key = "tle:" + g; let txt = null;
+      try { const c = JSON.parse(store.get(key) || "null"); if (c && Date.now() - c.at < 12 * 3600e3) txt = c.txt; } catch (e) {}
+      if (!txt) { txt = await this.getText("https://celestrak.org/NORAD/elements/gp.php?GROUP=" + g + "&FORMAT=tle"); store.set(key, JSON.stringify({ at: Date.now(), txt })); }
+      const L = txt.split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean);
+      for (let i = 0; i + 2 < L.length; i += 3) {
+        if (!L[i + 1].startsWith("1 ") || !L[i + 2].startsWith("2 ")) continue;
+        try { sats.push({ name: L[i].trim(), group: g, rec: satellite.twoline2satrec(L[i + 1], L[i + 2]) }); } catch (e) {}
+      }
+    }
+    this.satList = sats;
+    this.passes = null;
+    if (this.area()) await this.predict();
+    return { count: sats.length };
+  },
+  look(rec, date, gd) {
+    const pv = satellite.propagate(rec, date);
+    if (!pv || !pv.position) return null;
+    const gmst = satellite.gstime(date);
+    const la = satellite.ecfToLookAngles(gd, satellite.eciToEcf(pv.position, gmst));
+    const geo = satellite.eciToGeodetic(pv.position, gmst);
+    return { el: la.elevation * 180 / Math.PI, lat: satellite.degreesLat(geo.latitude), lon: satellite.degreesLong(geo.longitude) };
+  },
+  async predict() {
+    const a = this.area(); if (!a || !this.satList) return;
+    const gd = { latitude: Geo.rad(a.lat), longitude: Geo.rad(a.lon), height: 0 };
+    const t0 = Date.now(), step = 60e3, span = 12 * 3600e3;
+    const passes = [];
+    let fixed = 0;
+    for (let i = 0; i < this.satList.length; i++) {
+      const s = this.satList[i];
+      /* Orbits longer than 10 h (geostationary and similar) do not "pass": count them apart. */
+      if (2 * Math.PI / s.rec.no > 600) { const l = this.look(s.rec, new Date(t0), gd); if (l && l.el > 0) fixed++; continue; }
+      let cur = null;
+      for (let t = t0; t <= t0 + span; t += step) {
+        const l = this.look(s.rec, new Date(t), gd);
+        const up = l && l.el > 0;
+        if (up && !cur) cur = { name: s.name, group: s.group, rise: t, max: l.el, maxAt: t, set: t };
+        else if (up && cur) { cur.set = t; if (l.el > cur.max) { cur.max = l.el; cur.maxAt = t; } }
+        else if (!up && cur) { if (cur.max >= 10) passes.push(cur); cur = null; }
+      }
+      if (cur && cur.max >= 10) passes.push(cur);
+      if (i % 15 === 14) await sleep(0); /* keep the page responsive */
+    }
+    passes.sort((x, y) => x.rise - y.rise);
+    this.passes = passes;
+    this.fixedUp = fixed;
+  },
+  satNow() {
+    const a = this.area(); if (!a || !this.satList || !S.ctx.satellites.on) return [];
+    const gd = { latitude: Geo.rad(a.lat), longitude: Geo.rad(a.lon), height: 0 };
+    const now = new Date(); const out = [];
+    for (const s of this.satList) { if (2 * Math.PI / s.rec.no > 600) continue; const l = this.look(s.rec, now, gd); if (l && l.el > 0) out.push({ name: s.name, lat: l.lat, lon: l.lon }); }
+    return out;
+  },
+
+  srcLine(name, credit) {
+    const s = this.src[name] || {};
+    const parts = [credit];
+    const stale = s.at && Date.now() - s.at > 3 * this.interval[name];
+    if (s.busy) parts.push("updating…");
+    if (s.at) parts.push("fetched " + ago(Date.now() - s.at) + (stale ? " · stale" : ""));
+    if (s.err) parts.push("unavailable: " + s.err);
+    const p = el("p", "cap" + (s.err || stale ? " stale" : ""), parts.join(" · "));
+    p.style.margin = "4px 0 16px";
+    return p;
+  },
+  offCard(text) { const d = el("div", "card"); d.append(el("p", "cap", text)); return d; },
+  rowItem(title, sub, kind, url) {
+    const r = el("div", "row"); const g = el("div", "grow");
+    const t = el(url ? "a" : "div", "t", title); if (url) { t.href = url; t.target = "_blank"; t.rel = "noopener noreferrer"; t.style.textDecoration = "none"; t.style.display = "block"; }
+    g.append(t, el("div", "s", sub)); r.append(g, chip(kind)); return r;
+  },
+  renderAll() {
+    const a = this.area(), c = S.ctx;
+    if (!c) return;
+    $("#ctxAreaLine").textContent = a ? "Area · 0.1° cell at " + a.lat.toFixed(1) + "°, " + a.lon.toFixed(1) + "° · distances are from its centre" : "No area set yet. Use “Set area on map” or enter it under Settings › Context sources.";
+    $$(".subtabs button").forEach((b) => b.setAttribute("aria-selected", b.dataset.sub === this.sub));
+    ["env", "planes", "sat"].forEach((s) => $("#sub-" + s).classList.toggle("hidden", s !== this.sub));
+    this.renderEnv(); this.renderPlanes(); this.renderSats();
+  },
+  renderEnv() {
+    const c = S.ctx, a = this.area();
+    const air = $("#envAir"); air.replaceChildren();
+    if (c.air === "off") air.append(this.offCard("Air quality is off. Turn it on under Settings › Context sources."));
+    else if (a) {
+      const d = this.src.air && this.src.air.data;
+      const head = el("div", "card-head"); head.append(el("span", "label", "Air quality"), chip("PREDICTED")); air.append(head);
+      if (d) {
+        const cur = d.cur;
+        const europe = this.inEurope(a);
+        const eu = (v) => v == null ? "-" : v <= 20 ? "Good" : v <= 40 ? "Fair" : v <= 60 ? "Moderate" : v <= 80 ? "Poor" : v <= 100 ? "Very poor" : "Extremely poor";
+        const us = (v) => v == null ? "-" : v <= 50 ? "Good" : v <= 100 ? "Moderate" : v <= 150 ? "Unhealthy for sensitive groups" : v <= 200 ? "Unhealthy" : v <= 300 ? "Very unhealthy" : "Hazardous";
+        const aqi = europe ? cur.european_aqi : cur.us_aqi;
+        const tiles = el("div", "tiles");
+        [["AQI", aqi, (europe ? eu : us)(aqi)], ["PM2.5", cur.pm2_5, "µg/m³"]].forEach(([k, v, d2]) => { const t = el("div", "tile"); t.append(el("div", "label", k), el("div", "v", v == null ? "-" : String(Math.round(v))), el("div", "d", d2)); tiles.append(t); });
+        air.append(tiles);
+        const card = el("div", "card"); const k = el("div"); kv(k, [["PM10", fmtU(cur.pm10, "µg/m³")], ["Ozone", fmtU(cur.ozone, "µg/m³")], ["NO₂", fmtU(cur.nitrogen_dioxide, "µg/m³")]]);
+        const ch = el("div", "chart"); card.append(k, el("div", "label", "AQI · next 48 h"), ch);
+        air.append(card);
+        this.chartAir(ch, d.hourly, europe);
+        air.append(this.srcLine("air", "CAMS model via Open-Meteo · AQI scale: " + (europe ? "Europe" : "US") + " · " + (c.air === "fine" ? "fine area (0.1°)" : "coarse area (0.5°)") + (cur.time ? " · for " + hhmm(cur.time * 1000) : "") + " · a model estimate, not a measurement"));
+      } else air.append(this.srcLine("air", "CAMS model via Open-Meteo"));
+    }
+    const qb = $("#envQuakes"); qb.replaceChildren();
+    if (!c.earthquakes.on) qb.append(this.offCard("Earthquakes are off. Turn them on under Settings › Context sources."));
+    else if (a) {
+      const d = this.src.quakes && this.src.quakes.data;
+      qb.append(el("div", "label", "Earthquakes · " + (d ? d.near.length : "…") + " within " + c.earthquakes.radius_km + " km · past 7 days"));
+      if (d && d.near.length) {
+        const ch = el("div", "chart"); qb.append(ch); this.chartQuakes(ch, d.near);
+        d.near.slice(0, 30).forEach((q) => qb.append(this.rowItem("M" + (q.mag != null ? q.mag.toFixed(1) : "?") + " · " + (q.place || "unnamed place"), ago(Date.now() - q.time) + " · " + Math.round(q.km) + " km from area centre · depth " + Math.round(q.depth) + " km", "NETWORK", q.url)));
+      } else if (d) qb.append(el("p", "cap", "None reported in this radius in the past 7 days."));
+      qb.append(this.srcLine("quakes", "U.S. Geological Survey"));
+    }
+    const hb = $("#envHazards"); hb.replaceChildren();
+    if (!c.hazards.on) hb.append(this.offCard("Natural events are off. Turn them on under Settings › Context sources."));
+    else if (a) {
+      const d = this.src.hazards && this.src.hazards.data;
+      hb.append(el("div", "label", "Natural events · " + (d ? d.near.length : "…") + " open nearby"));
+      if (d && d.near.length) d.near.forEach((h) => hb.append(this.rowItem(h.name, [h.typeName, h.magnitude, h.from ? "since " + ago(Date.now() - h.from).replace(" ago", "") : null, Math.round(h.km) + " km from area centre"].filter(Boolean).join(" · "), "NETWORK", h.url)));
+      else if (d) hb.append(el("p", "cap", "No open natural events close to this area."));
+      hb.append(this.srcLine("hazards", "NASA Earth Observatory Natural Event Tracker (EONET)"));
+    }
+    const gb = $("#envGdacs"); gb.replaceChildren();
+    if (c.gdacs.on && a) {
+      if (!c.relay) gb.append(this.offCard("Disaster alerts need a relay: GDACS does not let a web page read it. Set one under Settings › Context sources."));
+      else {
+        const d = this.src.gdacs && this.src.gdacs.data;
+        gb.append(el("div", "label", "Disaster alerts · " + (d ? d.near.length : "…") + " nearby"));
+        if (d && d.near.length) d.near.forEach((h) => gb.append(this.rowItem(clip(h.name, 80), [h.type, h.level ? h.level + " alert level" : null, h.severity, clip(h.country, 80), h.from ? "since " + ago(Date.now() - h.from).replace(" ago", "") : null, Math.round(h.km) + " km from area centre"].filter(Boolean).join(" · "), "NETWORK", h.url)));
+        else if (d) gb.append(el("p", "cap", "No current GDACS events close to this area."));
+        gb.append(this.srcLine("gdacs", "GDACS (United Nations and European Commission), through your relay"));
+      }
+    }
+    const wb = $("#envWarnings"); wb.replaceChildren();
+    if (c.warnings.on && c.warnings.region.startsWith("ma:") && !c.relay) {
+      wb.append(this.offCard("MeteoAlarm warnings need a relay: MeteoAlarm does not let a web page read it. Set one under Settings › Context sources."));
+    } else if (c.warnings.on && c.warnings.region) {
+      const d = this.src.warnings && this.src.warnings.data;
+      wb.append(el("div", "label", "Official warnings · copies in the issuer's words"));
+      if (d && d.items.length) d.items.slice(0, 20).forEach((w) => wb.append(this.rowItem(w.title || w.event, [w.event, w.severity, w.area, w.until ? "until " + new Date(w.until).toLocaleString() : ""].filter(Boolean).join(" · "), "NETWORK", w.url)));
+      else if (d) wb.append(el("p", "cap", "No active warnings in this feed."));
+      wb.append(this.srcLine("warnings", d ? d.issuer : c.warnings.region.startsWith("ma:") ? "MeteoAlarm (EUMETNET)" : "National Weather Service"));
+    }
+  },
+  renderPlanes() {
+    const b = $("#planesBody"); b.replaceChildren();
+    const c = S.ctx, a = this.area();
+    if (!c.aircraft.on) { b.append(this.offCard("Aircraft are off. Turn them on under Settings › Context sources.")); return; }
+    if (!c.relay) { b.append(this.offCard("Aircraft need a relay: the ADS-B feeds do not let a web page read them. Set one under Settings › Context sources.")); return; }
+    if (!a) { b.append(this.offCard("Set an area to list aircraft.")); return; }
+    const d = this.src.planes && this.src.planes.data;
+    b.append(el("div", "label", "Aircraft · " + (d ? d.near.length : "…") + " within " + c.aircraft.radius_km + " km"));
+    if (d && d.near.length) d.near.slice(0, 60).forEach((x) => b.append(this.rowItem(x.name,
+      [x.type, x.reg && x.reg !== x.name ? x.reg : null, x.alt === "ground" ? "on the ground" : x.alt != null ? Math.round(x.alt).toLocaleString() + " ft" : null,
+        x.gs != null ? Math.round(x.gs * 1.852) + " km/h" : null, Math.round(x.km) + " km from area centre", x.seen != null ? "position " + Math.round(x.seen) + " s old" : null].filter(Boolean).join(" · "), "NETWORK")));
+    else if (d) b.append(el("p", "cap", "No aircraft broadcasting a position in this radius right now."));
+    b.append(this.srcLine("planes", "ADS-B from adsb.lol contributors (ODbL), through your relay"));
+  },
+  renderSats() {
+    const b = $("#satBody"); b.replaceChildren();
+    const c = S.ctx;
+    if (!c.satellites.on || !c.satellites.groups.length) { b.append(this.offCard("Satellite passes are off. Turn them on under Settings › Context sources.")); return; }
+    if (!this.area()) { b.append(this.offCard("Set an area to predict passes.")); b.append(this.srcLine("sats", "Orbits from CelesTrak")); return; }
+    const p = this.passes;
+    b.append(el("div", "label", "Passes · next 12 h · peak above 10°" + (p ? " · " + p.length : "")));
+    if (p && p.length) {
+      const ch = el("div", "chart"); b.append(ch); this.chartSats(ch, p);
+      const GN = { resource: "Earth observation", weather: "Weather", stations: "Space station" };
+      p.slice(0, 40).forEach((x) => b.append(this.rowItem(x.name, hhmm(x.rise) + "–" + hhmm(x.set) + " · peak " + Math.round(x.max) + "° at " + hhmm(x.maxAt) + " · " + GN[x.group], "PREDICTED")));
+    } else if (this.satList && !p) b.append(el("p", "cap", "Predicting passes…"));
+    else if (p) b.append(el("p", "cap", "No passes above 10° in the next 12 hours."));
+    if (p && this.fixedUp) b.append(el("p", "cap", this.fixedUp + " geostationary or high-orbit satellites stay above the horizon here and are not listed as passes."));
+    b.append(this.srcLine("sats", "Orbits from CelesTrak, predicted in this browser (SGP4)" + (this.satList ? " · " + this.satList.length + " satellites" : "")));
+  },
+  mkChart(key, container, opts, data) {
+    if (this.charts[key]) { try { this.charts[key].destroy(); } catch (e) {} }
+    const w = Math.max(260, Math.min($("main").clientWidth - 40, 940));
+    const axis = { stroke: "#7C828C", grid: { stroke: "#161B23", width: 1 }, ticks: { stroke: "#232A36", width: 1 }, font: "10px 'Geist Mono'" };
+    const base = { width: w, height: 170, cursor: { drag: { x: false, y: false } }, legend: { show: false }, axes: [axis, Object.assign({ size: 40 }, axis)] };
+    this.charts[key] = new uPlot(Object.assign(base, opts), data, container);
+  },
+  chartQuakes(ct, near) {
+    const pts = near.slice().sort((a, b) => a.time - b.time);
+    this.mkChart("quakes", ct, { scales: { x: { time: true }, y: { range: (u, mn, mx) => [Math.floor(Math.min(2.5, mn)), Math.ceil(Math.max(5, mx))] } },
+      series: [{}, { label: "Magnitude", stroke: "#6CB8F0", width: 0, paths: () => null, points: { show: true, size: 7, stroke: "#6CB8F0", fill: "rgba(108,184,240,.35)" } }] },
+      [pts.map((q) => q.time / 1000), pts.map((q) => q.mag)]);
+  },
+  chartAir(ct, h, europe) {
+    const series = europe ? h.european_aqi : h.us_aqi;
+    if (!h.time || !series) return;
+    const now = Date.now() / 1000; const xs = [], ys = [];
+    h.time.forEach((t, i) => { if (t >= now - 3600 && t <= now + 48 * 3600) { xs.push(t); ys.push(series[i]); } });
+    if (!xs.length) return;
+    const floor = europe ? 60 : 100, stepY = europe ? 20 : 50;
+    this.mkChart("air", ct, { scales: { x: { time: true }, y: { range: (u, mn, mx) => [0, Math.max(floor, Math.ceil(mx / stepY) * stepY)] } },
+      series: [{}, { label: "AQI", stroke: "#B9A6FF", width: 1.6, fill: "rgba(185,166,255,.10)" }] }, [xs, ys]);
+  },
+  chartSats(ct, passes) {
+    const a = this.area(); const gd = { latitude: Geo.rad(a.lat), longitude: Geo.rad(a.lon), height: 0 };
+    const top = passes.filter((p) => p.set > Date.now()).slice(0, 5);
+    if (!top.length) return;
+    const t0 = Math.floor(Date.now() / 60e3) * 60e3, t1 = Math.max(...top.map((p) => p.set)) + 5 * 60e3;
+    const xs = []; for (let t = t0; t <= t1; t += 60e3) xs.push(t / 1000);
+    const colors = ["#B9A6FF", "#F2B33D", "#6CB8F0", "#E9E6DF", "#F59A8C"];
+    const series = [{}], data = [xs];
+    top.forEach((p, i) => {
+      const s = this.satList.find((x) => x.name === p.name); if (!s) return;
+      data.push(xs.map((x) => { const t = x * 1000; if (t < p.rise - 60e3 || t > p.set + 60e3) return null; const l = this.look(s.rec, new Date(t), gd); return l && l.el > 0 ? +l.el.toFixed(1) : null; }));
+      series.push({ label: p.name, stroke: colors[i % colors.length], width: 1.6 });
+    });
+    this.mkChart("sats", ct, { legend: { show: true, live: false }, scales: { x: { time: true }, y: { range: [0, 90] } }, series }, data);
+  },
+};
+$$(".subtabs button").forEach((b) => b.onclick = () => { Ctx.sub = b.dataset.sub; Ctx.renderAll(); Ctx.drawMap(); Ctx.tick(false); });
+$("#ctxPickBtn").onclick = () => Ctx.setPicking(!Ctx.picking);
+$("#ctxIpBtn").onclick = () => useApproxArea();
+$("#ctxRefreshBtn").onclick = () => { Object.keys(Ctx.src).forEach((k) => { if (k !== "sats") delete Ctx.src[k]; }); Ctx.passes = null; Ctx.renderAll(); Ctx.predict().then(() => Ctx.isOpen && Ctx.renderAll()); Ctx.tick(true); };
+$("#ctxSourcesBtn").onclick = () => { showTab("settings"); setTimeout(() => $("#ctxSettings").scrollIntoView({ behavior: "smooth" }), 300); };
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && Ctx.isOpen) Ctx.tick(false); });
+setInterval(() => { if (Ctx.isOpen && Ctx.mapReady) Ctx.drawMap(); }, 30000); /* satellites move */
+
+/* ---------------------------------------------------------------- live events */
+function setLive(state) { const p = $("#liveChip"); p.className = "chip " + (state === "live" ? "sensed" : "live"); p.lastChild.textContent = state; }
 function connectWs() {
   if (!token) return;
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?token=" + encodeURIComponent(token));
-  ws.onopen = () => { wsRetry = 0; setLive("live"); };
-  ws.onmessage = (m) => {
+  S.ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?token=" + encodeURIComponent(token));
+  S.ws.binaryType = "arraybuffer";
+  S.ws.onopen = () => { S.wsRetry = 0; setLive("live"); };
+  S.ws.onmessage = (m) => {
+    if (m.data instanceof ArrayBuffer) { decodeRecords(m.data).forEach(addObs); return; } /* a new record, raw */
     m.data.split("\n").filter(Boolean).forEach((line) => {
       let e; try { e = JSON.parse(line); } catch (x) { return; }
       if (e.ev === "status") renderStatus(e.status);
       else if (e.ev === "obs") addObs(e.rec);
       else if (e.ev === "mode") refreshStatus();
-      else if (e.ev === "mesh_rx" || e.ev === "mesh_tx" || e.ev === "mesh_node") { if ($("#tab-mesh").classList.contains("active")) refreshMesh(); if (e.ev === "mesh_rx") toast("Mesh message from " + nodeName(e.msg.from)); }
+      else if (e.ev === "mesh_rx" || e.ev === "mesh_tx" || e.ev === "mesh_node" || e.ev === "mesh_waypoint") { if ($("#tab-mesh").classList.contains("active")) refreshMesh(); if (e.ev === "mesh_rx") toast("Mesh message from " + nodeName(e.msg.from)); }
+      else if (e.ev === "mesh_traceroute") { onTraceroute(e); toast("Route check to " + nodeName(e.to) + " came back"); }
     });
   };
-  ws.onclose = () => { setLive("reconnecting"); ws = null; if (token) setTimeout(connectWs, Math.min(10000, 1000 * ++wsRetry)); };
+  S.ws.onclose = () => { setLive("reconnecting"); S.ws = null; if (token) setTimeout(connectWs, Math.min(10000, 1000 * ++S.wsRetry)); };
 }
 
 async function start() {
   $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
   const j = await run({ cmd: "info" }); if (!j) return;
-  info = j.info; $("#title").textContent = "Sotreus Edge " + info.suffix + " · fw " + info.fw;
-  const c = await run({ cmd: "get_config" }); if (c) config = c.config;
+  S.info = j.info; $("#title").textContent = "Sotreus Edge " + S.info.suffix;
+  const [c, x] = await Promise.all([run({ cmd: "get_config" }), run({ cmd: "ctx_get" })]);
+  if (c) S.config = c.config;
+  S.ctx = ctxMerge(x ? x.ctx : null);
   await refreshStatus();
   connectWs();
+  setInterval(() => { if (!S.ws) refreshStatus(); }, 15000);
 }
 if (token) start();
 </script>

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -25,6 +26,7 @@
 #include "mesh.h"
 #include "mesh_pb.h"
 #include "mesh_radio.h"
+#include <math.h>
 #include "sense.h"
 
 static const char *TAG = "api";
@@ -94,13 +96,23 @@ static const char *link_name(uint8_t l)
     }
 }
 
+static const char *const REBROADCAST[] = {"all", "all_skip_decoding", "local_only", "known_only", "none", "core_portnums_only"};
+static const char *const ROLES[] = {"CLIENT", "CLIENT_MUTE", "ROUTER", NULL, "REPEATER", "TRACKER", "SENSOR",
+                                    "TAK", "CLIENT_HIDDEN", "LOST_AND_FOUND", "TAK_TRACKER", "ROUTER_LATE"};
+static const char *const POS_MODES[] = {"off", "fixed", "client"};
+static const char *const NOTIFY_MODES[] = {"off", "message", "bell"};
+
 static const char *rebroadcast_name(uint8_t r)
 {
-    switch (r) {
-    case EDGE_REBROADCAST_LOCAL_ONLY: return "local_only";
-    case EDGE_REBROADCAST_NONE: return "none";
-    default: return "all";
+    return r < 6 ? REBROADCAST[r] : "all";
+}
+
+static int name_index(const char *s, const char *const *names, int n)
+{
+    for (int i = 0; s && i < n; i++) {
+        if (names[i] && strcasecmp(s, names[i]) == 0) return i;
     }
+    return -1;
 }
 
 static bool parse_node(const cJSON *v, uint32_t *out)
@@ -185,6 +197,13 @@ cJSON *edge_api_info_json(void)
     cJSON_AddNumberToObject(o, "protocol", EDGE_PROTOCOL_VERSION);
     cJSON_AddStringToObject(o, "device_id", hex);
     cJSON_AddStringToObject(o, "name", "Sotreus Edge");
+    cJSON_AddStringToObject(o, "vendor", "NetSepio LLC");
+    cJSON_AddStringToObject(o, "vendor_url", "https://netsepio.com");
+    cJSON_AddStringToObject(o, "product_url", "https://sotreus.com");
+    char host[24];
+    snprintf(host, sizeof(host), "sotreus-%s.local", id->suffix);
+    for (char *c = host; *c; c++) *c = (char)((*c >= 'A' && *c <= 'Z') ? *c + 32 : *c);
+    cJSON_AddStringToObject(o, "mdns_host", host);
     cJSON_AddStringToObject(o, "suffix", id->suffix);
     cJSON_AddStringToObject(o, "fw", app->version);
     cJSON_AddStringToObject(o, "idf", esp_get_idf_version());
@@ -211,20 +230,22 @@ cJSON *edge_api_info_json(void)
 
 cJSON *edge_api_status_json(void)
 {
-    edge_config_t cfg;
-    edge_config_get(&cfg);
+    edge_config_t *cfg = malloc(sizeof(*cfg));
+    if (!cfg) return cJSON_CreateObject();
+    edge_config_get(cfg);
     cJSON *o = cJSON_CreateObject();
     int64_t up = edge_uptime_ms();
     cJSON_AddNumberToObject(o, "uptime_ms", (double)up);
     cJSON_AddBoolToObject(o, "time_valid", edge_time_valid());
     cJSON_AddStringToObject(o, "time_source", edge_time_source());
     if (edge_time_valid()) cJSON_AddNumberToObject(o, "unix_ms", (double)edge_time_to_unix_ms(up));
-    cJSON_AddStringToObject(o, "mode", mode_name(cfg.mode));
+    cJSON_AddStringToObject(o, "mode", mode_name(cfg->mode));
 
     edge_battery_t b;
     edge_battery_get(&b);
     cJSON *bj = cJSON_AddObjectToObject(o, "battery");
     cJSON_AddBoolToObject(bj, "present", b.present);
+    cJSON_AddStringToObject(bj, "source", b.present ? "battery" : b.external ? "usb" : "unknown");
     if (b.present) {
         cJSON_AddNumberToObject(bj, "mv", b.mv);
         cJSON_AddNumberToObject(bj, "percent_approx", b.percent);
@@ -236,7 +257,7 @@ cJSON *edge_api_status_json(void)
     edge_wifi_info_t wi;
     edge_wifi_get_info(&wi);
     cJSON *wj = cJSON_AddObjectToObject(o, "link");
-    cJSON_AddStringToObject(wj, "mode", link_name(cfg.link_mode));
+    cJSON_AddStringToObject(wj, "mode", link_name(cfg->link_mode));
     cJSON_AddStringToObject(wj, "state", edge_wifi_state_name(wi.state));
     cJSON_AddStringToObject(wj, "ssid", wi.ssid);
     cJSON_AddStringToObject(wj, "ip", wi.ip);
@@ -281,6 +302,7 @@ cJSON *edge_api_status_json(void)
 
     cJSON_AddItemToObject(o, "mesh", mesh_status_json());
     cJSON_AddNumberToObject(o, "events_dropped", edge_events_dropped());
+    free(cfg);
     return o;
 }
 
@@ -322,7 +344,57 @@ static cJSON *config_json(const edge_config_t *c)
         char psk[64];
         psk_text(&c->channels[i], psk, sizeof(psk));
         cJSON_AddStringToObject(ch, "psk", psk);
+        cJSON_AddNumberToObject(ch, "position_precision", c->channels[i].position_precision);
         cJSON_AddItemToArray(chs, ch);
+    }
+    const edge_mesh_ext_t *x = &c->mx;
+    cJSON_AddStringToObject(m, "role", ROLES[x->role] ? ROLES[x->role] : "CLIENT");
+    cJSON_AddBoolToObject(m, "licensed", x->licensed);
+    cJSON *pos = cJSON_AddObjectToObject(m, "position");
+    cJSON_AddStringToObject(pos, "mode", POS_MODES[x->pos_mode]);
+    if (x->pos_lat_i || x->pos_lon_i) {
+        cJSON_AddNumberToObject(pos, "lat", x->pos_lat_i / 1e7);
+        cJSON_AddNumberToObject(pos, "lon", x->pos_lon_i / 1e7);
+        cJSON_AddNumberToObject(pos, "alt", x->pos_alt);
+    }
+    cJSON_AddNumberToObject(pos, "interval_s", x->pos_interval_s);
+    cJSON_AddNumberToObject(m, "telemetry_interval_s", x->telemetry_interval_s);
+    cJSON *nb = cJSON_AddObjectToObject(m, "neighbor_info");
+    cJSON_AddBoolToObject(nb, "enabled", x->neighbor_info);
+    cJSON_AddNumberToObject(nb, "interval_s", x->neighbor_interval_s);
+    cJSON_AddNumberToObject(m, "range_test_interval_s", x->range_test_interval_s);
+    cJSON *nt = cJSON_AddObjectToObject(m, "notify");
+    cJSON_AddStringToObject(nt, "mode", NOTIFY_MODES[x->notify_mode]);
+    cJSON_AddNumberToObject(nt, "gpio", x->notify_gpio);
+    cJSON *dt = cJSON_AddObjectToObject(m, "detection");
+    cJSON_AddBoolToObject(dt, "enabled", x->detect_enabled);
+    cJSON_AddNumberToObject(dt, "gpio", x->detect_gpio);
+    cJSON_AddBoolToObject(dt, "active_high", x->detect_active_high);
+    cJSON_AddNumberToObject(dt, "min_interval_s", x->detect_min_interval_s);
+    cJSON_AddStringToObject(dt, "name", x->detect_name);
+    cJSON *px = cJSON_AddObjectToObject(m, "paxcounter");
+    cJSON_AddBoolToObject(px, "enabled", x->pax_enabled);
+    cJSON_AddNumberToObject(px, "interval_s", x->pax_interval_s);
+    cJSON *se = cJSON_AddObjectToObject(m, "serial");
+    cJSON_AddBoolToObject(se, "enabled", x->serial_enabled);
+    cJSON_AddNumberToObject(se, "rx", x->serial_rx);
+    cJSON_AddNumberToObject(se, "tx", x->serial_tx);
+    cJSON_AddNumberToObject(se, "baud", x->serial_baud);
+    cJSON *cn = cJSON_AddArrayToObject(m, "canned");
+    for (int i = 0; i < x->n_canned; i++) cJSON_AddItemToArray(cn, cJSON_CreateString(x->canned[i]));
+    cJSON *lo = cJSON_AddObjectToObject(m, "lora");
+    cJSON_AddNumberToObject(lo, "freq_offset_hz", x->freq_offset_hz);
+    cJSON_AddNumberToObject(lo, "override_freq_mhz", x->override_freq_khz / 1000.0);
+    cJSON_AddBoolToObject(lo, "tx_enabled", x->tx_enabled);
+    cJSON_AddBoolToObject(lo, "override_duty_cycle", x->override_duty_cycle);
+    cJSON_AddBoolToObject(lo, "rx_boosted", x->rx_boosted);
+    cJSON_AddBoolToObject(lo, "ignore_mqtt", x->ignore_mqtt);
+    cJSON_AddBoolToObject(lo, "ok_to_mqtt", x->ok_to_mqtt);
+    cJSON *ig = cJSON_AddArrayToObject(m, "ignore");
+    for (int i = 0; i < x->n_ignore; i++) {
+        char nid[12];
+        snprintf(nid, sizeof(nid), "!%08lx", (unsigned long)x->ignore[i]);
+        cJSON_AddItemToArray(ig, cJSON_CreateString(nid));
     }
     return o;
 }
@@ -377,10 +449,9 @@ static const char *apply_config_json(const cJSON *j, edge_config_t *c)
         }
         if (jnum(m, "hop_limit", &n)) c->hop_limit = (uint8_t)(n < 1 ? 1 : n > 7 ? 7 : n);
         if ((s = jstr(m, "rebroadcast"))) {
-            if (strcmp(s, "all") == 0) c->rebroadcast = EDGE_REBROADCAST_ALL;
-            else if (strcmp(s, "local_only") == 0) c->rebroadcast = EDGE_REBROADCAST_LOCAL_ONLY;
-            else if (strcmp(s, "none") == 0) c->rebroadcast = EDGE_REBROADCAST_NONE;
-            else return "rebroadcast must be all, local_only or none";
+            int i = name_index(s, REBROADCAST, 6);
+            if (i < 0) return "rebroadcast must be all, all_skip_decoding, local_only, known_only, none or core_portnums_only";
+            c->rebroadcast = (uint8_t)i;
         }
         if (jnum(m, "tx_power", &n)) c->tx_power = (int8_t)(n < 0 ? 0 : n > 30 ? 30 : n);
         if (jnum(m, "channel_num", &n)) c->channel_num = (uint16_t)(n < 0 ? 0 : n > 1000 ? 1000 : n);
@@ -396,7 +467,7 @@ static const char *apply_config_json(const cJSON *j, edge_config_t *c)
         const cJSON *chs = cJSON_GetObjectItemCaseSensitive(m, "channels");
         if (cJSON_IsArray(chs)) {
             int cnt = cJSON_GetArraySize(chs);
-            if (cnt < 1 || cnt > EDGE_MESH_MAX_CHANNELS) return "1 to 4 channels";
+            if (cnt < 1 || cnt > EDGE_MESH_MAX_CHANNELS) return "1 to 8 channels";
             edge_mesh_channel_t tmp[EDGE_MESH_MAX_CHANNELS];
             memset(tmp, 0, sizeof(tmp));
             for (int i = 0; i < cnt; i++) {
@@ -406,10 +477,172 @@ static const char *apply_config_json(const cJSON *j, edge_config_t *c)
                 edge_strlcpy(tmp[i].name, name ? name : "", sizeof(tmp[i].name));
                 const char *psk = jstr(ch, "psk");
                 if (!parse_psk(psk ? psk : "default", &tmp[i])) return "psk must be default, none, simpleN or base64:<16|32 bytes>";
+                double pp;
+                bool pub = tmp[i].psk_len == 1 && tmp[i].psk[0] == 1;
+                tmp[i].position_precision = jnum(ch, "position_precision", &pp) ? (uint8_t)(pp < 0 ? 0 : pp > 32 ? 32 : pp)
+                                                                                : (pub ? 13 : 32);
             }
             memcpy(c->channels, tmp, sizeof(tmp));
             c->n_channels = (uint8_t)cnt;
         }
+        edge_mesh_ext_t *x = &c->mx;
+        if ((s = jstr(m, "role"))) {
+            int i = name_index(s, ROLES, 12);
+            if (i < 0) return "unknown role";
+            x->role = (uint8_t)i;
+        }
+        if (jbool(m, "licensed", &b)) x->licensed = b;
+        const cJSON *pos = cJSON_GetObjectItemCaseSensitive(m, "position");
+        if (cJSON_IsObject(pos)) {
+            if ((s = jstr(pos, "mode"))) {
+                int i = name_index(s, POS_MODES, 3);
+                if (i < 0) return "position mode must be off, fixed or client";
+                x->pos_mode = (uint8_t)i;
+            }
+            double la, lo2;
+            if (jnum(pos, "lat", &la) && jnum(pos, "lon", &lo2)) {
+                if (la < -90 || la > 90 || lo2 < -180 || lo2 > 180) return "position out of range";
+                x->pos_lat_i = (int32_t)lround(la * 1e7);
+                x->pos_lon_i = (int32_t)lround(lo2 * 1e7);
+            }
+            if (jnum(pos, "alt", &n)) x->pos_alt = (int32_t)n;
+            if (jnum(pos, "interval_s", &n)) x->pos_interval_s = (uint32_t)(n < 0 ? 0 : n);
+        }
+        if (jnum(m, "telemetry_interval_s", &n)) x->telemetry_interval_s = (uint32_t)(n < 0 ? 0 : n);
+        const cJSON *nb = cJSON_GetObjectItemCaseSensitive(m, "neighbor_info");
+        if (cJSON_IsObject(nb)) {
+            if (jbool(nb, "enabled", &b)) x->neighbor_info = b;
+            if (jnum(nb, "interval_s", &n)) x->neighbor_interval_s = (uint32_t)(n < 0 ? 0 : n);
+        }
+        if (jnum(m, "range_test_interval_s", &n)) x->range_test_interval_s = (uint32_t)(n < 0 ? 0 : n);
+        const cJSON *nt = cJSON_GetObjectItemCaseSensitive(m, "notify");
+        if (cJSON_IsObject(nt)) {
+            if ((s = jstr(nt, "mode"))) {
+                int i = name_index(s, NOTIFY_MODES, 3);
+                if (i < 0) return "notify mode must be off, message or bell";
+                x->notify_mode = (uint8_t)i;
+            }
+            if (jnum(nt, "gpio", &n)) x->notify_gpio = (int8_t)(n < -1 ? -1 : n > 48 ? -1 : n);
+        }
+        const cJSON *dt = cJSON_GetObjectItemCaseSensitive(m, "detection");
+        if (cJSON_IsObject(dt)) {
+            if (jbool(dt, "enabled", &b)) x->detect_enabled = b;
+            if (jnum(dt, "gpio", &n)) x->detect_gpio = (int8_t)(n < -1 ? -1 : n > 48 ? -1 : n);
+            if (jbool(dt, "active_high", &b)) x->detect_active_high = b;
+            if (jnum(dt, "min_interval_s", &n)) x->detect_min_interval_s = (uint16_t)(n < 0 ? 0 : n > 3600 ? 3600 : n);
+            if ((s = jstr(dt, "name"))) edge_strlcpy(x->detect_name, s, sizeof(x->detect_name));
+        }
+        const cJSON *px = cJSON_GetObjectItemCaseSensitive(m, "paxcounter");
+        if (cJSON_IsObject(px)) {
+            if (jbool(px, "enabled", &b)) x->pax_enabled = b;
+            if (jnum(px, "interval_s", &n)) x->pax_interval_s = (uint32_t)(n < 0 ? 0 : n);
+        }
+        const cJSON *se = cJSON_GetObjectItemCaseSensitive(m, "serial");
+        if (cJSON_IsObject(se)) {
+            if (jbool(se, "enabled", &b)) x->serial_enabled = b;
+            if (jnum(se, "rx", &n)) x->serial_rx = (int8_t)(n < -1 ? -1 : n > 48 ? -1 : n);
+            if (jnum(se, "tx", &n)) x->serial_tx = (int8_t)(n < -1 ? -1 : n > 48 ? -1 : n);
+            if (jnum(se, "baud", &n)) x->serial_baud = (uint32_t)n;
+        }
+        const cJSON *cn = cJSON_GetObjectItemCaseSensitive(m, "canned");
+        if (cJSON_IsArray(cn)) {
+            int cnt = cJSON_GetArraySize(cn);
+            if (cnt > EDGE_CANNED_MAX) return "at most 8 canned messages";
+            x->n_canned = 0;
+            for (int i = 0; i < cnt; i++) {
+                const cJSON *it = cJSON_GetArrayItem(cn, i);
+                if (!cJSON_IsString(it) || !it->valuestring[0]) continue;
+                if (strlen(it->valuestring) >= sizeof(x->canned[0])) return "canned messages are at most 39 bytes";
+                edge_strlcpy(x->canned[x->n_canned++], it->valuestring, sizeof(x->canned[0]));
+            }
+        }
+        const cJSON *lo = cJSON_GetObjectItemCaseSensitive(m, "lora");
+        if (cJSON_IsObject(lo)) {
+            if (jnum(lo, "freq_offset_hz", &n)) x->freq_offset_hz = (int32_t)n;
+            if (jnum(lo, "override_freq_mhz", &n)) x->override_freq_khz = (uint32_t)(n <= 0 ? 0 : lround(n * 1000));
+            if (jbool(lo, "tx_enabled", &b)) x->tx_enabled = b;
+            if (jbool(lo, "override_duty_cycle", &b)) x->override_duty_cycle = b;
+            if (jbool(lo, "rx_boosted", &b)) x->rx_boosted = b;
+            if (jbool(lo, "ignore_mqtt", &b)) x->ignore_mqtt = b;
+            if (jbool(lo, "ok_to_mqtt", &b)) x->ok_to_mqtt = b;
+        }
+        const cJSON *ig = cJSON_GetObjectItemCaseSensitive(m, "ignore");
+        if (cJSON_IsArray(ig)) {
+            int cnt = cJSON_GetArraySize(ig);
+            if (cnt > EDGE_IGNORE_MAX) return "at most 8 ignored nodes";
+            x->n_ignore = 0;
+            for (int i = 0; i < cnt; i++) {
+                uint32_t num;
+                if (parse_node(cJSON_GetArrayItem(ig, i), &num) && num != MT_BROADCAST) x->ignore[x->n_ignore++] = num;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* ---- Meshtastic channel link (https://meshtastic.org/e/#<base64url ChannelSet>) ---------- */
+
+static void channel_url(const edge_config_t *c, char *out, size_t cap)
+{
+    mt_channelset_t cs = {0};
+    cs.n = c->n_channels;
+    for (int i = 0; i < c->n_channels; i++) {
+        edge_strlcpy(cs.ch[i].name, c->channels[i].name, sizeof(cs.ch[i].name));
+        memcpy(cs.ch[i].psk, c->channels[i].psk, c->channels[i].psk_len);
+        cs.ch[i].psk_len = c->channels[i].psk_len;
+        cs.ch[i].position_precision = c->channels[i].position_precision;
+    }
+    cs.has_lora = true;
+    cs.use_preset = true;
+    cs.preset = c->preset;
+    cs.region = c->region;
+    cs.hop_limit = c->hop_limit;
+    cs.tx_enabled = c->mx.tx_enabled;
+    cs.tx_power = c->tx_power;
+    cs.channel_num = c->channel_num;
+    uint8_t *buf = malloc(512 + 700);
+    if (!buf) { out[0] = 0; return; }
+    char *b64 = (char *)buf + 512;
+    size_t n = mt_channelset_encode(&cs, buf, 512);
+    int l = edge_b64_encode(buf, n, b64, 700);
+    for (int i = 0; i < l; i++) {
+        if (b64[i] == '+') b64[i] = '-';
+        if (b64[i] == '/') b64[i] = '_';
+        if (b64[i] == '=') b64[i] = '\0';
+    }
+    snprintf(out, cap, "https://meshtastic.org/e/#%s", b64);
+    free(buf);
+}
+
+/* Applies a channel link: replace = all channels and LoRa settings, otherwise add its channels. */
+static const char *apply_channel_url(const char *url, bool replace, edge_config_t *c)
+{
+    const char *h = url ? strchr(url, '#') : NULL;
+    h = h ? h + 1 : url;
+    if (!h || !*h) return "not a channel link";
+    uint8_t buf[256]; /* a full 8-channel set with 32-byte keys is about 420 bytes of base64 */
+    int n = edge_b64_decode(h, buf, sizeof(buf));
+    mt_channelset_t cs;
+    if (n <= 0 || !mt_channelset_decode(buf, (size_t)n, &cs)) return "the link could not be read";
+    int base = replace ? 0 : c->n_channels;
+    if (base + cs.n > EDGE_MESH_MAX_CHANNELS) return "that would make more than 8 channels";
+    for (int i = 0; i < cs.n; i++) {
+        edge_mesh_channel_t *ch = &c->channels[base + i];
+        memset(ch, 0, sizeof(*ch));
+        edge_strlcpy(ch->name, cs.ch[i].name, sizeof(ch->name));
+        uint8_t len = cs.ch[i].psk_len;
+        if (len != 0 && len != 1 && len != 16 && len != 32) return "unsupported key length in the link";
+        memcpy(ch->psk, cs.ch[i].psk, len);
+        ch->psk_len = len;
+        bool pub = len == 1 && cs.ch[i].psk[0] == 1;
+        ch->position_precision = (uint8_t)(cs.ch[i].position_precision ? cs.ch[i].position_precision : (pub ? 13 : 32));
+    }
+    c->n_channels = (uint8_t)(base + cs.n);
+    if (replace && cs.has_lora) {
+        if (cs.use_preset && mesh_preset_by_code((uint8_t)cs.preset)) c->preset = (uint8_t)cs.preset;
+        if (cs.region && mesh_region_by_code((uint8_t)cs.region)) c->region = (uint8_t)cs.region;
+        if (cs.hop_limit) c->hop_limit = (uint8_t)cs.hop_limit;
+        c->channel_num = (uint16_t)cs.channel_num;
     }
     return NULL;
 }
@@ -447,6 +680,47 @@ static void sync_task(void *arg)
 
 /* ---- Dispatcher --------------------------------------------------------------------- */
 
+static __attribute__((noinline)) cJSON *cmd_set_config(const cJSON *cfgj)
+{
+    edge_config_t *old = malloc(2 * sizeof(*old));
+    if (!old) return err_resp("out of memory");
+    edge_config_t *c = old + 1;
+    edge_config_get(old);
+    *c = *old;
+    const char *e = apply_config_json(cfgj, c);
+    if (e) {
+        free(old);
+        return err_resp(e);
+    }
+    if (edge_config_set(c) != ESP_OK) {
+        free(old);
+        return err_resp("could not save settings");
+    }
+    edge_config_get(c);
+    bool mesh_changed = old->region != c->region || old->preset != c->preset || old->hop_limit != c->hop_limit ||
+                        old->tx_power != c->tx_power || old->channel_num != c->channel_num ||
+                        old->n_channels != c->n_channels || old->rebroadcast != c->rebroadcast ||
+                        memcmp(old->channels, c->channels, sizeof(c->channels)) != 0 ||
+                        memcmp(&old->mx, &c->mx, sizeof(c->mx)) != 0 || old->nodeinfo_interval_s != c->nodeinfo_interval_s ||
+                        strcmp(old->long_name, c->long_name) != 0 || strcmp(old->short_name, c->short_name) != 0;
+    bool sense_changed = old->ble_scan != c->ble_scan || old->ble_active != c->ble_active ||
+                         old->wifi_scan != c->wifi_scan || old->wifi_probes != c->wifi_probes ||
+                         old->rssi_floor != c->rssi_floor || old->close_after_s != c->close_after_s ||
+                         old->max_window_s != c->max_window_s || old->probe_ssid_plain != c->probe_ssid_plain;
+    if (old->link_mode != c->link_mode) edge_wifi_reconfigure();
+    if (old->mode != c->mode) {
+        edge_app_apply_mode((edge_mode_t)c->mode);
+    } else {
+        if (sense_changed) sense_reload();
+        if (mesh_changed) mesh_reload();
+    }
+    edge_record_event(EDGE_EVT_CONFIG, old->mode != c->mode ? mode_name(c->mode) : "settings");
+    cJSON *r = ok_resp();
+    cJSON_AddItemToObject(r, "config", config_json(c));
+    free(old);
+    return r;
+}
+
 cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
 {
     const char *cmd = jstr(req, "cmd");
@@ -458,6 +732,25 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
     if (strcmp(cmd, "info") == 0) {
         r = ok_resp();
         cJSON_AddItemToObject(r, "info", edge_api_info_json());
+    } else if (strcmp(cmd, "ctx_get") == 0) {
+        char *buf = malloc(EDGE_CTX_MAX);
+        if (!buf) return err_resp("no memory");
+        size_t n = edge_ctx_get(buf, EDGE_CTX_MAX);
+        r = ok_resp();
+        cJSON *c = n ? cJSON_Parse(buf) : NULL;
+        cJSON_AddItemToObject(r, "ctx", cJSON_IsObject(c) ? c : cJSON_CreateObject());
+        if (c && !cJSON_IsObject(c)) cJSON_Delete(c);
+        free(buf);
+    } else if (strcmp(cmd, "ctx_set") == 0) {
+        const cJSON *c = cJSON_GetObjectItemCaseSensitive(req, "ctx");
+        if (!cJSON_IsObject(c)) return err_resp("ctx must be an object");
+        char *s = cJSON_PrintUnformatted(c);
+        if (!s) return err_resp("no memory");
+        esp_err_t e = edge_ctx_set(s);
+        free(s);
+        if (e == ESP_ERR_INVALID_SIZE) return err_resp("context settings are too large");
+        if (e != ESP_OK) return err_resp("could not save");
+        r = ok_resp();
     } else if (strcmp(cmd, "diag") == 0) {
         r = ok_resp();
         cJSON *h = cJSON_AddObjectToObject(r, "heap");
@@ -478,46 +771,24 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         r = ok_resp();
         cJSON_AddItemToObject(r, "status", edge_api_status_json());
     } else if (strcmp(cmd, "get_config") == 0) {
-        edge_config_t c;
-        edge_config_get(&c);
+        edge_config_t *c = malloc(sizeof(*c));
+        if (!c) return err_resp("out of memory");
+        edge_config_get(c);
         r = ok_resp();
-        cJSON_AddItemToObject(r, "config", config_json(&c));
+        cJSON_AddItemToObject(r, "config", config_json(c));
+        free(c);
     } else if (strcmp(cmd, "set_config") == 0 || strcmp(cmd, "set_mode") == 0) {
         const cJSON *cfgj = strcmp(cmd, "set_mode") == 0 ? req : cJSON_GetObjectItemCaseSensitive(req, "config");
         if (!cJSON_IsObject(cfgj)) return err_resp("missing config object");
-        edge_config_t old, c;
-        edge_config_get(&old);
-        c = old;
-        const char *e = apply_config_json(cfgj, &c);
-        if (e) return err_resp(e);
-        if (edge_config_set(&c) != ESP_OK) return err_resp("could not save settings");
-        edge_config_get(&c);
-        bool mesh_changed = old.region != c.region || old.preset != c.preset || old.hop_limit != c.hop_limit ||
-                            old.tx_power != c.tx_power || old.channel_num != c.channel_num ||
-                            old.n_channels != c.n_channels || old.rebroadcast != c.rebroadcast ||
-                            memcmp(old.channels, c.channels, sizeof(c.channels)) != 0 ||
-                            strcmp(old.long_name, c.long_name) != 0 || strcmp(old.short_name, c.short_name) != 0;
-        bool sense_changed = old.ble_scan != c.ble_scan || old.ble_active != c.ble_active ||
-                             old.wifi_scan != c.wifi_scan || old.wifi_probes != c.wifi_probes ||
-                             old.rssi_floor != c.rssi_floor || old.close_after_s != c.close_after_s ||
-                             old.max_window_s != c.max_window_s || old.probe_ssid_plain != c.probe_ssid_plain;
-        if (old.link_mode != c.link_mode) edge_wifi_reconfigure();
-        if (old.mode != c.mode) {
-            edge_app_apply_mode((edge_mode_t)c.mode);
-        } else {
-            if (sense_changed) sense_reload();
-            if (mesh_changed) mesh_reload();
-        }
-        edge_record_event(EDGE_EVT_CONFIG, old.mode != c.mode ? mode_name(c.mode) : "settings");
-        r = ok_resp();
-        cJSON_AddItemToObject(r, "config", config_json(&c));
+        r = cmd_set_config(cfgj);
     } else if (strcmp(cmd, "set_time") == 0) {
         if (!jnum(req, "unix_ms", &n)) return err_resp("missing unix_ms");
         bool was = edge_time_valid();
         const char *src = jstr(req, "source");
         edge_time_set_unix_ms((int64_t)n, src ? src : (origin == EDGE_SINK_BLE ? "phone" : "api"));
+        if (jnum(req, "tz_offset_min", &n)) edge_time_set_tz_offset_min((int)n);
         if (!edge_time_valid()) return err_resp("time not plausible");
-        if (!was) edge_record_event(EDGE_EVT_TIME_SET, edge_time_source());
+        (void)was;
         r = ok_resp();
     } else if (strcmp(cmd, "wifi_list") == 0 || strcmp(cmd, "wifi_scan") == 0) {
         if (strcmp(cmd, "wifi_scan") == 0) edge_wifi_request_scan();
@@ -610,12 +881,116 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         uint8_t ch = jnum(req, "channel", &n) ? (uint8_t)n : 0;
         bool ack = jbool(req, "want_ack", &b) ? b : true;
         uint32_t id = 0;
-        esp_err_t e = mesh_send_text(to, ch, jstr(req, "text"), ack, &id);
+        uint32_t reply = jnum(req, "reply_id", &n) ? (uint32_t)n : 0;
+        uint32_t emoji = jbool(req, "reaction", &b) && b ? 1 : 0;
+        esp_err_t e = mesh_send_text(to, ch, jstr(req, "text"), ack, reply, emoji, &id);
         if (e == ESP_ERR_INVALID_STATE) return err_resp("mesh is not running or the LoRa region is not set");
         if (e == ESP_ERR_INVALID_SIZE) return err_resp("text must be 1-200 bytes");
         if (e != ESP_OK) return err_resp(esp_err_to_name(e));
         r = ok_resp();
         cJSON_AddNumberToObject(r, "packet_id", id);
+    } else if (strcmp(cmd, "mesh_canned") == 0) {
+        uint32_t id = 0;
+        esp_err_t e = mesh_send_canned(jnum(req, "index", &n) ? (int)n : 0, &id);
+        if (e != ESP_OK) return err_resp(e == ESP_ERR_INVALID_STATE ? "mesh is not running" : "no such canned message");
+        r = ok_resp();
+        cJSON_AddNumberToObject(r, "packet_id", id);
+    } else if (strcmp(cmd, "mesh_traceroute") == 0) {
+        uint32_t to, id = 0;
+        if (!parse_node(cJSON_GetObjectItemCaseSensitive(req, "to"), &to) || to == MT_BROADCAST) return err_resp("pick a node");
+        esp_err_t e = mesh_traceroute(to, jnum(req, "channel", &n) ? (uint8_t)n : 0, &id);
+        if (e != ESP_OK) return err_resp(e == ESP_ERR_INVALID_STATE ? "mesh is not running" : esp_err_to_name(e));
+        r = ok_resp();
+        cJSON_AddNumberToObject(r, "packet_id", id);
+    } else if (strcmp(cmd, "mesh_request_position") == 0) {
+        uint32_t to;
+        if (!parse_node(cJSON_GetObjectItemCaseSensitive(req, "to"), &to) || to == MT_BROADCAST) return err_resp("pick a node");
+        if (mesh_request_position(to, jnum(req, "channel", &n) ? (uint8_t)n : 0) != ESP_OK) return err_resp("mesh is not running");
+        r = ok_resp();
+    } else if (strcmp(cmd, "mesh_waypoint") == 0) {
+        mt_waypoint_t w = {0};
+        double la, lo2;
+        if (!jnum(req, "lat", &la) || !jnum(req, "lon", &lo2) || la < -90 || la > 90 || lo2 < -180 || lo2 > 180) return err_resp("lat and lon required");
+        w.has_lat = w.has_lon = true;
+        w.lat_i = (int32_t)lround(la * 1e7);
+        w.lon_i = (int32_t)lround(lo2 * 1e7);
+        edge_strlcpy(w.name, jstr(req, "name") ? jstr(req, "name") : "Waypoint", sizeof(w.name));
+        if (jstr(req, "description")) edge_strlcpy(w.description, jstr(req, "description"), sizeof(w.description));
+        if (jnum(req, "expire_unix_s", &n)) w.expire = (uint32_t)n;
+        if (jnum(req, "icon", &n)) w.icon = (uint32_t)n;
+        if (jnum(req, "id", &n)) w.id = (uint32_t)n;
+        uint32_t id = 0;
+        if (mesh_send_waypoint(&w, jnum(req, "channel", &n) ? (uint8_t)n : 0, &id) != ESP_OK) return err_resp("mesh is not running");
+        r = ok_resp();
+        cJSON_AddNumberToObject(r, "waypoint_id", id);
+    } else if (strcmp(cmd, "mesh_waypoints") == 0) {
+        r = ok_resp();
+        cJSON_AddItemToObject(r, "waypoints", mesh_waypoints_json());
+    } else if (strcmp(cmd, "mesh_store_forward") == 0) {
+        uint32_t router = 0;
+        const cJSON *rv = cJSON_GetObjectItemCaseSensitive(req, "router");
+        if (rv && !parse_node(rv, &router)) return err_resp("bad router id");
+        esp_err_t e = mesh_sf_request(router == MT_BROADCAST ? 0 : router, jnum(req, "channel", &n) ? (uint8_t)n : 0);
+        if (e == ESP_ERR_NOT_FOUND) return err_resp("no store & forward router heard yet");
+        if (e != ESP_OK) return err_resp("mesh is not running");
+        r = ok_resp();
+    } else if (strcmp(cmd, "mesh_send_nodeinfo") == 0) {
+        if (mesh_send_nodeinfo_now() != ESP_OK) return err_resp("mesh is not running");
+        r = ok_resp();
+    } else if (strcmp(cmd, "mesh_set_position") == 0) {
+        double la, lo2, al = 0;
+        if (!jnum(req, "lat", &la) || !jnum(req, "lon", &lo2) || la < -90 || la > 90 || lo2 < -180 || lo2 > 180) return err_resp("lat and lon required");
+        jnum(req, "alt", &al);
+        mesh_set_client_position((int32_t)lround(la * 1e7), (int32_t)lround(lo2 * 1e7), (int32_t)al);
+        r = ok_resp();
+    } else if (strcmp(cmd, "mesh_node") == 0) {
+        uint32_t num;
+        if (!parse_node(cJSON_GetObjectItemCaseSensitive(req, "id"), &num) || num == MT_BROADCAST) return err_resp("bad node id");
+        int fav = jbool(req, "favorite", &b) ? (b ? 1 : 0) : -1;
+        int ign = jbool(req, "ignored", &b) ? (b ? 1 : 0) : -1;
+        if (ign >= 0) { /* the ignore list lives in settings so it survives restarts */
+            edge_config_t *c = malloc(sizeof(*c));
+            if (!c) return err_resp("out of memory");
+            edge_config_get(c);
+            int k = 0;
+            for (int i = 0; i < c->mx.n_ignore; i++) {
+                if (c->mx.ignore[i] != num) c->mx.ignore[k++] = c->mx.ignore[i];
+            }
+            c->mx.n_ignore = (uint8_t)k;
+            if (ign && c->mx.n_ignore < EDGE_IGNORE_MAX) c->mx.ignore[c->mx.n_ignore++] = num;
+            edge_config_set(c);
+            free(c);
+            mesh_reload();
+        }
+        mesh_node_flags(num, fav, ign);
+        r = ok_resp();
+    } else if (strcmp(cmd, "mesh_channel_url") == 0) {
+        edge_config_t *c = malloc(sizeof(*c));
+        char *out = malloc(800);
+        if (!c || !out) {
+            free(c);
+            free(out);
+            return err_resp("out of memory");
+        }
+        edge_config_get(c);
+        const char *url = jstr(req, "url");
+        if (url) {
+            bool replace = jbool(req, "replace", &b) ? b : true;
+            const char *e = apply_channel_url(url, replace, c);
+            if (e) {
+                free(c);
+                free(out);
+                return err_resp(e);
+            }
+            edge_config_set(c);
+            mesh_reload();
+            edge_config_get(c);
+        }
+        channel_url(c, out, 800);
+        r = ok_resp();
+        cJSON_AddStringToObject(r, "url", out);
+        free(c);
+        free(out);
     } else if (strcmp(cmd, "mesh_nodes") == 0) {
         r = ok_resp();
         cJSON_AddItemToObject(r, "nodes", mesh_nodes_json());
@@ -626,16 +1001,19 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         r = ok_resp();
         cJSON_AddItemToObject(r, "mesh", mesh_status_json());
     } else if (strcmp(cmd, "mesh_new_identity") == 0) {
-        edge_config_t c;
-        edge_config_get(&c);
-        c.node_num = 0; /* clamp() draws a new random number */
-        edge_config_set(&c);
+        edge_config_t *c = malloc(sizeof(*c));
+        if (!c) return err_resp("out of memory");
+        edge_config_get(c);
+        c->node_num = 0; /* clamp() draws a new random number */
+        edge_config_set(c);
+        edge_pki_regenerate(); /* and a new key pair */
         mesh_reload();
-        edge_config_get(&c);
+        edge_config_get(c);
         r = ok_resp();
         char id[12];
-        snprintf(id, sizeof(id), "!%08lx", (unsigned long)c.node_num);
+        snprintf(id, sizeof(id), "!%08lx", (unsigned long)c->node_num);
         cJSON_AddStringToObject(r, "node_id", id);
+        free(c);
     } else if (strcmp(cmd, "regions") == 0) {
         r = ok_resp();
         cJSON *ra = cJSON_AddArrayToObject(r, "regions");
@@ -688,7 +1066,7 @@ static void api_task(void *arg)
 void edge_api_init(void)
 {
     s_jobs = xQueueCreate(8, sizeof(job_t));
-    xTaskCreate(api_task, "api", 5120, NULL, 4, NULL);
+    xTaskCreate(api_task, "api", 6144, NULL, 4, NULL);
 }
 
 void edge_api_submit(edge_sink_t origin, int target, char *line)

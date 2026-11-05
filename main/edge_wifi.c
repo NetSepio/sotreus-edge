@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_app_desc.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -20,6 +21,7 @@
 #include "edge_records.h"
 #include "edge_time.h"
 #include "edge_util.h"
+#include "mesh.h"
 #include "sense.h"
 
 static const char *TAG = "wifi";
@@ -190,6 +192,7 @@ static void parse_mgmt(const uint8_t *f, size_t len, int8_t rssi, uint8_t rx_cha
             p += 2 + l;
         }
         sense_feed_probe(&r);
+        mesh_pax_seen(true, r.mac);
         return;
     }
     if (subtype != 8 && subtype != 5) return; /* beacon / probe response */
@@ -583,6 +586,7 @@ static void link_step(const edge_config_t *cfg)
         if (s_got_ip) {
             s_state = EDGE_WIFI_STA_CONNECTED;
             s_fails = 0;
+            edge_time_start_sntp(); /* network time while joined to a network */
             ESP_LOGI(TAG, "joined %s, address %s", s_joined, s_ip);
         } else if (s_disconnected || t - s_connect_started > CONNECT_TIMEOUT_MS) {
             s_disconnected = false;
@@ -733,15 +737,28 @@ esp_err_t edge_wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     if (mdns_init() == ESP_OK) {
-        char host[32];
-        snprintf(host, sizeof(host), "sotreus-edge-%s", id->suffix);
+        /* sotreus-xxxx.local, plus a _sotreus._tcp service the app can browse for. */
+        char host[24], instance[32];
+        snprintf(host, sizeof(host), "sotreus-%s", id->suffix);
         for (char *c = host; *c; c++) *c = (char)((*c >= 'A' && *c <= 'Z') ? *c + 32 : *c);
+        snprintf(instance, sizeof(instance), "Sotreus Edge %s", id->suffix);
         mdns_hostname_set(host);
-        mdns_instance_name_set("Sotreus Edge");
-        mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+        mdns_instance_name_set(instance);
+        mdns_txt_item_t txt[] = {
+            {"vendor", "NetSepio LLC"},
+            {"product", "Sotreus Edge"},
+            {"url", "https://sotreus.com"},
+            {"model", "heltec_wifi_lora_32_v3"},
+            {"fw", esp_app_get_description()->version},
+            {"api", "1"},
+            {"path", "/"},
+        };
+        size_t ntxt = sizeof(txt) / sizeof(txt[0]);
+        mdns_service_add(instance, "_http", "_tcp", 80, txt, ntxt);
+        mdns_service_add(instance, "_sotreus", "_tcp", 80, txt, ntxt);
     }
 
-    xTaskCreatePinnedToCore(wifi_task, "wifi_link", 4096, NULL, 5, &s_task, 0);
+    xTaskCreatePinnedToCore(wifi_task, "wifi_link", 6144, NULL, 5, &s_task, 0);
     return ESP_OK;
 }
 

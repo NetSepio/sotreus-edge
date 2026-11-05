@@ -35,6 +35,8 @@ static const char *TAG = "ui";
 enum { SCREEN_STATUS = 0, SCREEN_LINK, SCREEN_ACCESS, SCREEN_MESH, SCREEN_COUNT };
 
 static int s_screen;
+static int s_canned;            /* selected canned message on the LORA screen */
+static int64_t s_tap_at;        /* pending single tap on the LORA screen (double tap = next message) */
 static bool s_display_on = true;
 static int64_t s_last_activity;
 
@@ -99,11 +101,14 @@ static void draw_status(const edge_config_t *cfg)
     }
     edge_battery_t bat;
     edge_battery_get(&bat);
+    char clock[16];
+    bool have_clock = edge_time_local_hhmm(clock, sizeof(clock));
     if (bat.present) {
-        line(7, "%lu.%02luV ~%d%% %s", (unsigned long)(bat.mv / 1000), (unsigned long)(bat.mv % 1000 / 10),
-             bat.percent, edge_time_valid() ? "clock ok" : "no clock");
+        /* Battery details only once a battery is actually connected. */
+        line(7, "%lu.%02luV ~%d%%  %s", (unsigned long)(bat.mv / 1000), (unsigned long)(bat.mv % 1000 / 10),
+             bat.percent, have_clock ? clock : "--:--");
     } else {
-        line(7, "USB power  %s", edge_time_valid() ? "clock ok" : "no clock");
+        line(7, "%s", have_clock ? clock : "Clock not set yet");
     }
 }
 
@@ -121,9 +126,15 @@ static void draw_link(void)
         line(7, "%d connected", w.stations);
         break;
     case EDGE_WIFI_STA_CONNECTED:
-        line(2, "Joined Wi-Fi:");
-        line(3, "%s", w.ssid);
-        line(5, "http://%s", w.ip);
+        line(1, "Joined Wi-Fi:");
+        line(2, "%s", w.ssid);
+        line(4, "http://%s", w.ip);
+        {
+            char host[24];
+            snprintf(host, sizeof(host), "sotreus-%s", edge_identity()->suffix);
+            for (char *c = host; *c; c++) *c = (char)((*c >= 'A' && *c <= 'Z') ? *c + 32 : *c);
+            line(5, "%s.local", host);
+        }
         line(7, "Signal %d dBm", w.rssi);
         break;
     case EDGE_WIFI_STA_CONNECTING:
@@ -167,19 +178,24 @@ static void draw_mesh(void)
         line(5, "app or setup page.");
         return;
     }
-    line(2, "Relayed %lu", (unsigned long)m.relayed);
+    line(2, "Nodes %d  ch %.0f%%", m.nodes, m.channel_util);
     if (m.last_text[0]) {
-        line(4, "From %s:", m.last_from);
-        /* Wrap the last message over the remaining three lines. */
+        line(3, "From %s:", m.last_from);
+        /* Wrap the last message over two lines. */
         size_t len = strlen(m.last_text);
-        for (int i = 0; i < 3 && (size_t)(i * 21) < len; i++) {
+        for (int i = 0; i < 2 && (size_t)(i * 21) < len; i++) {
             char seg[22];
             strncpy(seg, m.last_text + i * 21, 21);
             seg[21] = '\0';
-            ssd1306_text(0, 5 + i, seg, 1);
+            ssd1306_text(0, 4 + i, seg, 1);
         }
     } else {
-        line(4, "No messages yet.");
+        line(3, "No messages yet.");
+    }
+    char canned[40];
+    if (mesh_canned_get(s_canned, canned, sizeof(canned))) {
+        line(6, "> %s", canned);
+        line(7, "2x tap next, hold send");
     }
 }
 
@@ -255,13 +271,28 @@ static void ui_task(void *arg)
                 s_screen = SCREEN_STATUS;
                 wake();
             } else if (held < 1000) {
-                if (s_display_on) {
+                bool canned = s_display_on && s_screen == SCREEN_MESH && mesh_running() && mesh_canned_count() > 0;
+                if (canned && s_tap_at && t - s_tap_at < 400) {
+                    s_tap_at = 0; /* double tap: next canned message */
+                    s_canned = (s_canned + 1) % mesh_canned_count();
+                } else if (canned) {
+                    s_tap_at = t; /* wait to see whether a second tap follows */
+                } else if (s_display_on) {
                     s_screen = (s_screen + 1) % SCREEN_COUNT;
                 }
+                wake();
+            } else if (held < 2500 && s_display_on && s_screen == SCREEN_MESH && mesh_running()) {
+                uint32_t id;
+                if (mesh_send_canned(s_canned, &id) == ESP_OK) ESP_LOGI(TAG, "canned message %d sent", s_canned);
                 wake();
             } else {
                 wake();
             }
+            last_redraw = 0;
+        }
+        if (s_tap_at && t - s_tap_at >= 400) { /* single tap on the LORA screen: next screen */
+            s_tap_at = 0;
+            s_screen = (s_screen + 1) % SCREEN_COUNT;
             last_redraw = 0;
         }
         int64_t held = pressed ? t - pressed_at : 0;
@@ -290,7 +321,12 @@ static void ui_task(void *arg)
             last_ble = t;
             edge_ble_get_info(&b);
         }
-        gpio_set_level(PIN_LED, b.pairing_open && ((t / 500) % 2 == 0) ? 1 : 0);
+        bool notify_on;
+        if (mesh_led(t, &notify_on)) {
+            gpio_set_level(PIN_LED, notify_on ? 1 : 0); /* external notification: a mesh message arrived */
+        } else {
+            gpio_set_level(PIN_LED, b.pairing_open && ((t / 500) % 2 == 0) ? 1 : 0);
+        }
 
         if (!have_display) continue;
         if (b.passkey_active || (pressed && held >= RESET_WARN_MS)) wake();
