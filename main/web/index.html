@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sotreus Edge</title>
+<style>
+:root{
+  --bg:#f6f7f9;--surface:#fff;--surface-2:#eef1f4;--text:#14181f;--muted:#5b6573;--line:#dde2e8;
+  --accent:#2457d6;--accent-ink:#fff;--sensed:#1f7a4d;--network:#7a4fd0;--warn:#a15c00;--danger:#b42318;
+  --radius:12px;--gap:12px;--tap:44px;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1216;--surface:#171b21;--surface-2:#1f252d;--text:#e8ecf1;--muted:#9aa5b3;--line:#2a313b;
+  --accent:#7aa2ff;--accent-ink:#0b1020;--sensed:#5cc994;--network:#b79bff;--warn:#e7a54a;--danger:#ff7b72;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-size:15px;line-height:1.45}
+header{position:sticky;top:0;z-index:2;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0;font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;background:var(--surface-2);color:var(--muted)}
+.pill.on{color:var(--sensed)}.pill.net{color:var(--network)}.pill.warn{color:var(--warn)}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+nav{display:flex;gap:4px;overflow-x:auto;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--line)}
+nav button{flex:0 0 auto}
+main{max-width:920px;margin:0 auto;padding:16px}
+section{display:none}section.active{display:block}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:var(--gap)}
+.card h2{font-size:15px;margin:0 0 10px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--gap)}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line)}
+.kv:last-child{border-bottom:0}.kv span:first-child{color:var(--muted)}.kv span:last-child{text-align:right;overflow-wrap:anywhere}
+.note{color:var(--muted);font-size:13px;margin:6px 0 0}
+button,.btn{min-height:var(--tap);padding:0 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface-2);color:var(--text);font:inherit;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.danger{color:var(--danger)}
+button[aria-selected=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+input,select,textarea{min-height:var(--tap);width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit}
+textarea{min-height:88px;resize:vertical}
+label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:1 1 140px}
+.check{display:flex;align-items:center;gap:10px;min-height:var(--tap);color:var(--text);font-size:15px;margin:0}
+.check input{width:22px;min-height:22px;flex:0 0 auto}
+.seg{display:flex;gap:6px}.seg button{flex:1}
+.list{list-style:none;margin:0;padding:0}
+.list li{padding:10px 0;border-bottom:1px solid var(--line)}
+.list li:last-child{border-bottom:0}
+.obs-top{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.chip{font-size:11px;font-weight:600;letter-spacing:.02em;border-radius:6px;padding:1px 6px;background:var(--surface-2)}
+.chip.sensed{color:var(--sensed)}.chip.network{color:var(--network)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.muted{color:var(--muted)}.small{font-size:12px}
+.msg{padding:8px 10px;border-radius:10px;background:var(--surface-2);margin:6px 0}
+.msg.out{border-left:3px solid var(--accent)}
+.banner{border-radius:10px;padding:10px 12px;background:var(--surface-2);color:var(--warn);margin-bottom:var(--gap)}
+.hidden{display:none!important}
+#login{max-width:380px;margin:12vh auto;padding:0 16px}
+#toast{position:fixed;left:16px;right:16px;bottom:16px;max-width:520px;margin:0 auto;background:var(--text);color:var(--bg);padding:10px 14px;border-radius:10px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:1}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:500}
+.tablewrap{overflow-x:auto}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <h2>Sotreus Edge</h2>
+    <p class="note">Enter the 8-digit setup PIN. Press PRG on the Edge until the ACCESS screen shows it.</p>
+    <label for="pin">Setup PIN</label>
+    <input id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9]*">
+    <p id="loginErr" class="note" style="color:var(--danger)"></p>
+    <button class="primary" id="loginBtn" style="width:100%">Unlock</button>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+<header>
+  <h1 id="title">Sotreus Edge</h1>
+  <span id="modePill" class="pill"><span class="dot"></span><span>-</span></span>
+  <span id="livePill" class="pill"><span class="dot"></span><span>connecting</span></span>
+  <span style="flex:1"></span>
+  <button id="logoutBtn">Lock</button>
+</header>
+<nav role="tablist">
+  <button data-tab="overview" aria-selected="true">Overview</button>
+  <button data-tab="obs">Observations</button>
+  <button data-tab="mesh">Mesh</button>
+  <button data-tab="wifi">Wi-Fi</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+<main>
+
+<section id="tab-overview" class="active">
+  <div class="card">
+    <h2>Mode</h2>
+    <div class="seg" id="modeSeg">
+      <button data-mode="awareness">Awareness</button>
+      <button data-mode="mesh">Mesh</button>
+    </div>
+    <p class="note" id="modeNote"></p>
+  </div>
+  <div class="grid">
+    <div class="card"><h2>Device</h2><div id="devKv"></div></div>
+    <div class="card"><h2>Links</h2><div id="linkKv"></div>
+      <div class="row" style="margin-top:8px"><button id="pairBtn">Open Bluetooth pairing (2 min)</button></div></div>
+    <div class="card"><h2>Awareness</h2><div id="awKv"></div></div>
+    <div class="card"><h2>Records on the Edge</h2><div id="logKv"></div></div>
+  </div>
+</section>
+
+<section id="tab-obs">
+  <div class="card">
+    <div class="row">
+      <button id="loadRecent">Load recent records</button>
+      <button id="downloadAll">Download all (NDJSON)</button>
+      <button id="clearView">Clear view</button>
+    </div>
+    <p class="note">Everything here was sensed by this Edge and stays on it until a paired phone syncs it. Signal strength shows how loud a device was here, not how far away it is or in which direction.</p>
+  </div>
+  <div class="card"><h2>Latest</h2><ul class="list" id="obsList"><li class="muted">Waiting for new records. A sighting is written when a device goes quiet, or every few minutes while it is still heard.</li></ul></div>
+</section>
+
+<section id="tab-mesh">
+  <div id="meshBanner" class="banner hidden"></div>
+  <div class="card">
+    <h2>Send a message</h2>
+    <div class="row">
+      <div><label for="msgTo">To</label><select id="msgTo"><option value="broadcast">Everyone on the channel</option></select></div>
+      <div><label for="msgCh">Channel</label><select id="msgCh"><option value="0">0</option></select></div>
+    </div>
+    <label for="msgText">Message <span id="msgCount" class="small"></span></label>
+    <textarea id="msgText" maxlength="200"></textarea>
+    <div class="row" style="margin-top:8px"><button class="primary" id="msgSend">Send over LoRa</button></div>
+    <p class="note">Messages go out on the Meshtastic-compatible channel set in Settings. Direct messages ask for an acknowledgement; channel messages report when a neighbour relays them.</p>
+  </div>
+  <div class="card"><h2>Messages</h2><div id="msgList"><p class="muted">No messages yet.</p></div></div>
+  <div class="card"><h2>Nodes heard</h2>
+    <div class="tablewrap"><table><thead><tr><th>Name</th><th>ID</th><th>Last heard</th><th>Hops</th><th>Signal</th></tr></thead><tbody id="nodeRows"></tbody></table></div>
+    <p class="note">Positions, if any, are reported by the nodes themselves over the mesh (network data), not measured by this Edge.</p>
+  </div>
+</section>
+
+<section id="tab-wifi">
+  <div class="card">
+    <h2>Link</h2>
+    <label for="linkMode">How the Edge uses Wi-Fi</label>
+    <select id="linkMode">
+      <option value="auto">Join a known network, otherwise run its own access point</option>
+      <option value="ap">Always run its own access point</option>
+      <option value="sta">Only join known networks</option>
+      <option value="off">Off (Bluetooth only, Wi-Fi radio only listens)</option>
+    </select>
+    <div class="row" style="margin-top:8px"><button class="primary" id="linkSave">Save link mode</button></div>
+    <div id="apKv" style="margin-top:10px"></div>
+  </div>
+  <div class="card">
+    <h2>Known networks</h2>
+    <ul class="list" id="knownList"></ul>
+    <label for="netSsid">Network name</label>
+    <input id="netSsid" list="nearby" autocomplete="off"><datalist id="nearby"></datalist>
+    <label for="netPass">Password (empty for an open network)</label>
+    <input id="netPass" type="password" autocomplete="off">
+    <div class="row" style="margin-top:8px"><button class="primary" id="netAdd">Add network</button><button id="netScan">Scan nearby</button></div>
+    <p class="note">Network passwords are stored on the Edge only.</p>
+  </div>
+</section>
+
+<section id="tab-settings">
+  <div class="card">
+    <h2>Awareness</h2>
+    <label class="check"><input type="checkbox" id="sBle"> Bluetooth LE advertisers</label>
+    <label class="check"><input type="checkbox" id="sBleActive"> Ask advertisers for scan responses (names)</label>
+    <label class="check"><input type="checkbox" id="sAps"> Wi-Fi access points</label>
+    <label class="check"><input type="checkbox" id="sProbes"> Wi-Fi probe requests from nearby devices</label>
+    <label class="check"><input type="checkbox" id="sProbeNames"> Keep probed network names in clear (off keeps a salted hash)</label>
+    <div class="row">
+      <div><label for="sFloor">Ignore weaker than (dBm)</label><input id="sFloor" type="number" min="-127" max="-20"></div>
+      <div><label for="sClose">Close a sighting after quiet (s)</label><input id="sClose" type="number" min="10" max="3600"></div>
+      <div><label for="sWin">Write at least every (s)</label><input id="sWin" type="number" min="10" max="3600"></div>
+    </div>
+    <label for="sDisp">Display turns off after (s, 0 = never)</label><input id="sDisp" type="number" min="0" max="3600">
+  </div>
+  <div class="card">
+    <h2>LoRa mesh</h2>
+    <div class="row">
+      <div><label for="mRegion">Region</label><select id="mRegion"></select></div>
+      <div><label for="mPreset">Modem preset</label><select id="mPreset"></select></div>
+    </div>
+    <div class="row">
+      <div><label for="mLong">Long name</label><input id="mLong" maxlength="39"></div>
+      <div><label for="mShort">Short name</label><input id="mShort" maxlength="4"></div>
+    </div>
+    <div class="row">
+      <div><label for="mHops">Hop limit</label><input id="mHops" type="number" min="1" max="7"></div>
+      <div><label for="mPower">Transmit power dBm (0 = region limit)</label><input id="mPower" type="number" min="0" max="30"></div>
+      <div><label for="mRebroadcast">Relay</label><select id="mRebroadcast">
+        <option value="all">Relay all packets</option><option value="local_only">Only my channels</option><option value="none">Do not relay</option></select></div>
+    </div>
+    <label>Channels (name up to 11 characters; key: default, none, simpleN or base64:...)</label>
+    <div id="chanRows"></div>
+    <div class="row" style="margin-top:8px"><button id="chanAdd">Add channel</button></div>
+    <p class="note" id="nodeIdNote"></p>
+  </div>
+  <div class="row" style="margin-bottom:var(--gap)"><button class="primary" id="saveSettings">Save settings</button></div>
+  <div class="card">
+    <h2>Maintenance</h2>
+    <div class="row">
+      <button id="newPin">New setup PIN</button>
+      <button id="newNode">New mesh identity</button>
+      <button id="reboot">Restart</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="danger" id="eraseLog">Erase all records</button>
+      <button class="danger" id="forget">Forget paired phones</button>
+      <button class="danger" id="factory">Factory reset</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Firmware update</h2>
+    <input type="file" id="fwFile" accept=".bin">
+    <label for="fwSha">Expected SHA-256 (optional, from the release notes)</label>
+    <input id="fwSha" class="mono" maxlength="64">
+    <div class="row" style="margin-top:8px"><button id="fwUpload">Upload and restart</button></div>
+    <p class="note" id="fwNote">The Edge rolls back to the current firmware if the new one does not start cleanly.</p>
+  </div>
+</section>
+
+</main>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+let token = null; try { token = sessionStorage.getItem("edgeToken"); } catch (e) {}
+let ws = null, wsRetry = 0, status = null, info = null, config = null, regions = [], presets = [];
+const obs = [];
+
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3200); }
+function setToken(t) { token = t; try { t ? sessionStorage.setItem("edgeToken", t) : sessionStorage.removeItem("edgeToken"); } catch (e) {} }
+
+async function cmd(body) {
+  const r = await fetch("/api/cmd", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token }, body: JSON.stringify(body) });
+  if (r.status === 401) { lock(); throw new Error("Session ended"); }
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || "Request failed");
+  return j;
+}
+async function run(body, okMsg) { try { const j = await cmd(body); if (okMsg) toast(okMsg); return j; } catch (e) { toast(e.message); return null; } }
+
+/* ---------- login ---------- */
+async function login() {
+  const pin = $("#pin").value.trim();
+  $("#loginErr").textContent = "";
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin, unix_ms: Date.now() }) });
+    const j = await r.json();
+    if (!j.ok) { $("#loginErr").textContent = j.error || "Could not unlock"; return; }
+    setToken(j.token); start();
+  } catch (e) { $("#loginErr").textContent = "The Edge did not answer. Check the Wi-Fi connection."; }
+}
+function lock() {
+  if (token) fetch("/api/logout", { method: "POST", headers: { "Authorization": "Bearer " + token } }).catch(() => {});
+  setToken(null); if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#pin").value = "";
+}
+$("#loginBtn").onclick = login;
+$("#pin").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+$("#logoutBtn").onclick = lock;
+
+/* ---------- tabs ---------- */
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach((x) => x.setAttribute("aria-selected", x === b));
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("active", s.id === "tab-" + b.dataset.tab));
+  if (b.dataset.tab === "mesh") refreshMesh();
+  if (b.dataset.tab === "wifi") refreshWifi();
+  if (b.dataset.tab === "settings") fillSettings();
+});
+
+/* ---------- formatting ---------- */
+function ago(ms) { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + " s ago"; if (s < 3600) return Math.round(s / 60) + " min ago"; if (s < 86400) return Math.round(s / 3600) + " h ago"; return Math.round(s / 86400) + " d ago"; }
+function dur(ms) { const s = Math.round(ms / 1000); if (s < 120) return s + " s"; if (s < 7200) return Math.round(s / 60) + " min"; return (s / 3600).toFixed(1) + " h"; }
+function kv(target, rows) { const t = $(target); t.replaceChildren(...rows.map(([k, v]) => { const d = el("div", "kv"); d.append(el("span", "", k), el("span", "", String(v))); return d; })); }
+function recTime(r) {
+  if (r.time_valid) return ago(Date.now() - r.last_unix_ms);
+  return "uptime " + dur(r.last_uptime_ms) + " (boot " + r.boot + ", clock not set)";
+}
+
+/* ---------- status ---------- */
+function renderStatus(s) {
+  status = s;
+  const mesh = s.mode === "mesh";
+  const mp = $("#modePill"); mp.className = "pill " + (mesh ? "net" : "on"); mp.lastChild.textContent = mesh ? "Mesh" : "Awareness";
+  document.querySelectorAll("#modeSeg button").forEach((b) => b.setAttribute("aria-selected", b.dataset.mode === s.mode));
+  $("#modeNote").textContent = mesh ? "LoRa mesh is on. Bluetooth and Wi-Fi observation is paused until you switch back." : "Bluetooth and Wi-Fi observation is on. LoRa is off.";
+  const b = s.battery;
+  kv("#devKv", [
+    ["Running for", dur(s.uptime_ms)],
+    ["Clock", s.time_valid ? "set from " + s.time_source : "not set (records use uptime)"],
+    ["Power", b.present ? (b.mv / 1000).toFixed(2) + " V, about " + b.percent + "%" : "USB, no battery reading"],
+    ["Free memory", Math.round(s.heap_free / 1024) + " KB"],
+  ]);
+  const l = s.link, bl = s.ble;
+  kv("#linkKv", [
+    ["Wi-Fi", l.state === "ap" ? "access point " + l.ssid + " (" + l.stations + " connected)" : l.state === "connected" ? "joined " + l.ssid + " (" + l.rssi + " dBm)" : l.state],
+    ["Address", l.ip || "-"],
+    ["Wi-Fi listening", l.sniffing ? (l.hopping ? "channels 1-13" : "channel " + l.channel) : "off"],
+    ["Bluetooth", bl.secured + " phone(s) connected, " + bl.bonds + " paired"],
+    ["Pairing", bl.pairing_open ? "open" + (bl.pairing_left_s ? " for " + bl.pairing_left_s + " s" : " until a phone pairs") : "closed"],
+  ]);
+  const a = s.awareness;
+  kv("#awKv", [
+    ["State", a.running ? "listening" : "paused"],
+    ["Bluetooth devices heard now", a.open_sightings.ble],
+    ["Access points heard now", a.open_sightings.wifi_ap],
+    ["Probing devices heard now", a.open_sightings.wifi_probe],
+    ["Records written since start", a.records],
+  ]);
+  const g = s.log;
+  kv("#logKv", [
+    ["Stored", g.count + " of " + g.capacity],
+    ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"],
+    ["State", g.erasing ? "erasing" : "ready"],
+  ]);
+  const banner = $("#meshBanner");
+  if (!s.mesh.radio_present) { banner.textContent = "The LoRa radio did not respond."; banner.classList.remove("hidden"); }
+  else if (!s.mesh.region) { banner.textContent = "Set the LoRa region in Settings before the Edge can send or receive on the mesh."; banner.classList.remove("hidden"); }
+  else if (!s.mesh.running) { banner.textContent = "Mesh mode is off. Switch to Mesh on the Overview tab to send and receive."; banner.classList.remove("hidden"); }
+  else banner.classList.add("hidden");
+}
+document.querySelectorAll("#modeSeg button").forEach((b) => b.onclick = async () => {
+  const j = await run({ cmd: "set_mode", mode: b.dataset.mode }, b.dataset.mode === "mesh" ? "Switched to mesh" : "Switched to awareness");
+  if (j) { config = j.config; refreshStatus(); }
+});
+$("#pairBtn").onclick = () => run({ cmd: "pairing_open", seconds: 120 }, "Pairing open. The code appears on the Edge's display.");
+async function refreshStatus() { const j = await run({ cmd: "status" }); if (j) renderStatus(j.status); }
+
+/* ---------- observations ---------- */
+function obsLabel(r) {
+  switch (r.type) {
+    case "ble": return r.name || r.addr;
+    case "wifi_ap": return r.ssid === null ? "Hidden network (" + r.bssid + ")" : r.ssid;
+    case "wifi_probe": return r.mac + (r.randomized ? " (randomised address)" : "");
+    case "mesh_text": return "Mesh " + r.dir + ": " + r.text;
+    case "event": return "Edge " + r.event + (r.detail ? ": " + r.detail : "");
+    default: return r.type;
+  }
+}
+const TYPE_NAME = { ble: "BLE", wifi_ap: "Wi-Fi AP", wifi_probe: "Wi-Fi probe", mesh_text: "LoRa", event: "Edge" };
+function renderObs() {
+  const list = $("#obsList");
+  if (!obs.length) return;
+  list.replaceChildren(...obs.slice(0, 150).map((r) => {
+    const li = el("li");
+    const top = el("div", "obs-top");
+    top.append(el("span", "chip " + (r.provenance === "NETWORK" ? "network" : "sensed"), r.provenance), el("span", "chip", TYPE_NAME[r.type] || r.type), el("strong", "", obsLabel(r)));
+    li.append(top);
+    const meta = [];
+    if (r.rssi) meta.push("signal " + r.rssi.min + " to " + r.rssi.max + " dBm");
+    if (r.count) meta.push(r.count + " reports");
+    if (r.channel && r.type !== "mesh_text") meta.push("ch " + r.channel);
+    if (r.auth) meta.push(r.auth);
+    if (r.continues) meta.push("still heard");
+    meta.push(recTime(r));
+    meta.push("#" + r.seq);
+    li.append(el("div", "small muted", meta.join(" · ")));
+    return li;
+  }));
+}
+function addObs(r) { if (obs.some((o) => o.seq === r.seq)) return; obs.unshift(r); obs.sort((a, b) => b.seq - a.seq); if (obs.length > 300) obs.length = 300; renderObs(); }
+$("#loadRecent").onclick = async () => {
+  const head = status ? status.log.head : 0;
+  let from = Math.max(status ? status.log.oldest : 0, head - 59);
+  for (let i = 0; i < 3; i++) {
+    const j = await run({ cmd: "records", from, limit: 20 });
+    if (!j || !j.records.length) break;
+    j.records.forEach(addObs); from = j.next;
+  }
+};
+$("#clearView").onclick = () => { obs.length = 0; $("#obsList").replaceChildren(el("li", "muted", "View cleared. Records stay on the Edge.")); };
+$("#downloadAll").onclick = async () => {
+  try {
+    const r = await fetch("/api/records?from=0&limit=5000&fmt=json", { headers: { "Authorization": "Bearer " + token } });
+    if (!r.ok) throw new Error("Download failed");
+    const blob = await r.blob(); const a = el("a"); a.href = URL.createObjectURL(blob);
+    a.download = "sotreus-edge-" + (info ? info.suffix : "") + "-records.ndjson"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } catch (e) { toast(e.message); }
+};
+
+/* ---------- mesh ---------- */
+let nodes = [];
+function nodeName(id) { const n = nodes.find((x) => x.id === id); return n && n.short_name ? n.short_name : id; }
+async function refreshMesh() {
+  const [n, m] = await Promise.all([run({ cmd: "mesh_nodes" }), run({ cmd: "mesh_messages" })]);
+  if (n) { nodes = n.nodes; renderNodes(); }
+  if (m) renderMsgs(m.messages);
+}
+function renderNodes() {
+  const rows = nodes.slice().sort((a, b) => a.last_heard_ago_s - b.last_heard_ago_s).map((n) => {
+    const tr = el("tr");
+    [n.long_name || "-", n.id, ago(n.last_heard_ago_s * 1000), n.hops_away ?? "-", n.rssi + " dBm / " + n.snr + " dB"].forEach((v) => tr.append(el("td", "", String(v))));
+    return tr;
+  });
+  $("#nodeRows").replaceChildren(...rows);
+  const sel = $("#msgTo"), cur = sel.value;
+  sel.replaceChildren(el("option", "", "Everyone on the channel"));
+  sel.firstChild.value = "broadcast";
+  nodes.forEach((n) => { const o = el("option", "", (n.long_name || n.id) + " (" + n.id + ")"); o.value = n.id; sel.append(o); });
+  sel.value = cur || "broadcast";
+}
+function renderMsgs(list) {
+  const box = $("#msgList");
+  if (!list.length) { box.replaceChildren(el("p", "muted", "No messages yet.")); return; }
+  box.replaceChildren(...list.slice().reverse().map((m) => {
+    const d = el("div", "msg" + (m.dir === "sent" ? " out" : ""));
+    const who = m.dir === "sent" ? "You to " + (m.to === "broadcast" ? "channel " + m.channel : nodeName(m.to)) : nodeName(m.from) + (m.to === "broadcast" ? " on channel " + m.channel : " to you");
+    d.append(el("div", "small muted", who + " · " + ago(m.ago_s * 1000) + (m.dir === "sent" ? " · " + m.status : " · " + m.rssi + " dBm")), el("div", "", m.text));
+    return d;
+  }));
+}
+$("#msgText").addEventListener("input", () => { const n = new TextEncoder().encode($("#msgText").value).length; $("#msgCount").textContent = n + " / 200 bytes"; });
+$("#msgSend").onclick = async () => {
+  const text = $("#msgText").value.trim(); if (!text) return;
+  const j = await run({ cmd: "mesh_send", text, to: $("#msgTo").value, channel: +$("#msgCh").value, want_ack: true });
+  if (j) { $("#msgText").value = ""; $("#msgCount").textContent = ""; refreshMesh(); }
+};
+
+/* ---------- wifi ---------- */
+async function refreshWifi(scan) {
+  const j = await run({ cmd: scan ? "wifi_scan" : "wifi_list" });
+  if (!j) return;
+  $("#knownList").replaceChildren(...(j.known.length ? j.known.map((k) => {
+    const li = el("li", "row"); const b = el("button", "danger", "Remove"); b.style.flex = "0 0 auto";
+    b.onclick = async () => { if (await run({ cmd: "wifi_remove", ssid: k.ssid }, "Removed")) refreshWifi(); };
+    li.append(el("span", "", k.ssid + (k.has_password ? "" : " (open)")), b); return li;
+  }) : [el("li", "muted", "No networks yet. The Edge runs its own access point until one is added.")]));
+  $("#nearby").replaceChildren(...j.nearby.map((n) => { const o = el("option"); o.value = n.ssid; o.label = n.rssi + " dBm, " + n.auth; return o; }));
+  if (config) $("#linkMode").value = config.link;
+  const acc = await run({ cmd: "access" });
+  if (acc) kv("#apKv", [["Edge network", acc.ap_ssid], ["Edge network password", acc.ap_password], ["Edge address on it", "http://192.168.4.1"]]);
+}
+$("#netScan").onclick = () => { toast("Scanning for a few seconds"); setTimeout(() => refreshWifi(false), 4000); run({ cmd: "wifi_scan" }); };
+$("#netAdd").onclick = async () => {
+  const ssid = $("#netSsid").value.trim(); if (!ssid) return;
+  if (await run({ cmd: "wifi_add", ssid, password: $("#netPass").value }, "Saved. The Edge will try it now.")) { $("#netSsid").value = ""; $("#netPass").value = ""; refreshWifi(); }
+};
+$("#linkSave").onclick = async () => { const j = await run({ cmd: "set_config", config: { link: $("#linkMode").value } }, "Link mode saved. This page may need to reconnect."); if (j) config = j.config; };
+
+/* ---------- settings ---------- */
+function chanRow(c, i) {
+  const d = el("div", "row"); d.dataset.i = i;
+  const n = el("input"); n.maxLength = 11; n.placeholder = i === 0 ? "empty = preset name (e.g. LongFast)" : "channel name"; n.value = c.name; n.className = "cname";
+  const k = el("input", "mono ckey"); k.value = c.psk;
+  const r = el("button", "danger", "Remove"); r.style.flex = "0 0 auto"; r.disabled = i === 0; r.onclick = () => d.remove();
+  d.append(n, k, r); return d;
+}
+async function fillSettings() {
+  if (!regions.length) { const j = await run({ cmd: "regions" }); if (j) { regions = j.regions; presets = j.presets; } }
+  const j = await run({ cmd: "get_config" }); if (!j) return; config = j.config;
+  const a = config.awareness;
+  $("#sBle").checked = a.ble; $("#sBleActive").checked = a.ble_active; $("#sAps").checked = a.wifi_aps; $("#sProbes").checked = a.wifi_probes; $("#sProbeNames").checked = a.probe_names;
+  $("#sFloor").value = a.rssi_floor; $("#sClose").value = a.close_after_s; $("#sWin").value = a.max_window_s; $("#sDisp").value = config.display.timeout_s;
+  const m = config.mesh;
+  $("#mRegion").replaceChildren(...["UNSET", ...regions].map((r) => { const o = el("option", "", r === "UNSET" ? "Not set (radio silent)" : r); o.value = r; return o; }));
+  $("#mRegion").value = m.region;
+  $("#mPreset").replaceChildren(...presets.map((p) => { const o = el("option", "", p); o.value = p; return o; }));
+  $("#mPreset").value = m.preset;
+  $("#mLong").value = m.long_name; $("#mShort").value = m.short_name; $("#mHops").value = m.hop_limit; $("#mPower").value = m.tx_power; $("#mRebroadcast").value = m.rebroadcast;
+  $("#chanRows").replaceChildren(...m.channels.map(chanRow));
+  $("#msgCh").replaceChildren(...m.channels.map((c, i) => { const o = el("option", "", i + (c.name ? " " + c.name : " primary")); o.value = i; return o; }));
+  $("#nodeIdNote").textContent = "Mesh node ID " + m.node_id + ". It is random and not derived from any hardware address.";
+}
+$("#chanAdd").onclick = () => { const n = $("#chanRows").children.length; if (n < 4) $("#chanRows").append(chanRow({ name: "", psk: "default" }, n)); };
+$("#saveSettings").onclick = async () => {
+  const channels = [...$("#chanRows").children].map((d) => ({ name: d.querySelector(".cname").value.trim(), psk: d.querySelector(".ckey").value.trim() || "default" }));
+  const c = {
+    awareness: { ble: $("#sBle").checked, ble_active: $("#sBleActive").checked, wifi_aps: $("#sAps").checked, wifi_probes: $("#sProbes").checked, probe_names: $("#sProbeNames").checked,
+      rssi_floor: +$("#sFloor").value, close_after_s: +$("#sClose").value, max_window_s: +$("#sWin").value },
+    display: { timeout_s: +$("#sDisp").value },
+    mesh: { region: $("#mRegion").value, preset: $("#mPreset").value, long_name: $("#mLong").value.trim(), short_name: $("#mShort").value.trim(),
+      hop_limit: +$("#mHops").value, tx_power: +$("#mPower").value, rebroadcast: $("#mRebroadcast").value, channels },
+  };
+  const j = await run({ cmd: "set_config", config: c }, "Settings saved");
+  if (j) { config = j.config; fillSettings(); refreshStatus(); }
+};
+function confirmRun(question, body, okMsg) { if (confirm(question)) return run(body, okMsg); return Promise.resolve(null); }
+$("#newPin").onclick = async () => { const j = await confirmRun("Create a new setup PIN? Every open session, including this one, will need it.", { cmd: "new_pin" }); if (j) { alert("New PIN: " + j.pin); lock(); } };
+$("#newNode").onclick = async () => { const j = await confirmRun("Pick a new random mesh node ID? Other nodes will see this Edge as a new node.", { cmd: "mesh_new_identity" }); if (j) { toast("New node ID " + j.node_id); fillSettings(); } };
+$("#reboot").onclick = () => confirmRun("Restart the Edge?", { cmd: "reboot" }, "Restarting");
+$("#eraseLog").onclick = () => confirmRun("Erase every record stored on the Edge? Records not yet synced to a phone are lost.", { cmd: "log_erase", confirm: true }, "Erasing records in the background");
+$("#forget").onclick = () => confirmRun("Remove every paired phone? Pairing opens again afterwards.", { cmd: "ble_forget_all", confirm: true }, "Paired phones removed");
+$("#factory").onclick = () => confirmRun("Erase all settings, Wi-Fi networks, pairings and records, then restart?", { cmd: "factory_reset", confirm: true }, "Erasing and restarting");
+$("#fwUpload").onclick = async () => {
+  const f = $("#fwFile").files[0]; if (!f) { toast("Choose a .bin file first"); return; }
+  if (!confirm("Upload " + f.name + " (" + Math.round(f.size / 1024) + " KB) and restart?")) return;
+  $("#fwNote").textContent = "Uploading...";
+  const headers = { "Authorization": "Bearer " + token, "Content-Type": "application/octet-stream" };
+  const sha = $("#fwSha").value.trim(); if (sha) headers["X-SHA256"] = sha;
+  try {
+    const r = await fetch("/api/ota", { method: "POST", headers, body: f }); const j = await r.json();
+    $("#fwNote").textContent = j.ok ? "Done (SHA-256 " + j.sha256 + "). Restarting." : (j.error || "Update failed");
+  } catch (e) { $("#fwNote").textContent = "Upload interrupted."; }
+};
+
+/* ---------- live events ---------- */
+function setLive(state) { const p = $("#livePill"); p.className = "pill " + (state === "live" ? "on" : "warn"); p.lastChild.textContent = state; }
+function connectWs() {
+  if (!token) return;
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?token=" + encodeURIComponent(token));
+  ws.onopen = () => { wsRetry = 0; setLive("live"); };
+  ws.onmessage = (m) => {
+    m.data.split("\n").filter(Boolean).forEach((line) => {
+      let e; try { e = JSON.parse(line); } catch (x) { return; }
+      if (e.ev === "status") renderStatus(e.status);
+      else if (e.ev === "obs") addObs(e.rec);
+      else if (e.ev === "mode") refreshStatus();
+      else if (e.ev === "mesh_rx" || e.ev === "mesh_tx" || e.ev === "mesh_node") { if ($("#tab-mesh").classList.contains("active")) refreshMesh(); if (e.ev === "mesh_rx") toast("Mesh message from " + nodeName(e.msg.from)); }
+    });
+  };
+  ws.onclose = () => { setLive("reconnecting"); ws = null; if (token) setTimeout(connectWs, Math.min(10000, 1000 * ++wsRetry)); };
+}
+
+async function start() {
+  $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
+  const j = await run({ cmd: "info" }); if (!j) return;
+  info = j.info; $("#title").textContent = "Sotreus Edge " + info.suffix + " · fw " + info.fw;
+  const c = await run({ cmd: "get_config" }); if (c) config = c.config;
+  await refreshStatus();
+  connectWs();
+}
+if (token) start();
+</script>
+</body>
+</html>

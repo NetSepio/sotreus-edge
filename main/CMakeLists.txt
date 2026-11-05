@@ -1,0 +1,26 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "edge_api.c"
+        "edge_battery.c"
+        "edge_ble.c"
+        "edge_config.c"
+        "edge_console.c"
+        "edge_events.c"
+        "edge_http.c"
+        "edge_log.c"
+        "edge_records.c"
+        "edge_time.c"
+        "edge_util.c"
+        "edge_wifi.c"
+        "sense.c"
+        "ssd1306.c"
+        "ui.c"
+        "mesh/mesh.c"
+        "mesh/mesh_pb.c"
+        "mesh/mesh_radio.c"
+        "mesh/sx1262.c"
+    INCLUDE_DIRS "." "mesh"
+    EMBED_TXTFILES "web/index.html"
+)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)

@@ -1,0 +1,43 @@
+menu "Sotreus Edge"
+
+    config EDGE_OLED_ENABLE
+        bool "Use the on-board SSD1306 OLED"
+        default y
+
+    config EDGE_BLE_PRIVACY
+        bool "Advertise with a resolvable private address (rotating)"
+        default y
+        help
+            The Edge's Bluetooth address changes over time so it cannot be
+            followed by its address. Bonded phones still resolve it.
+
+    config EDGE_AP_CHANNEL
+        int "Channel used by the Edge's own Wi-Fi access point"
+        range 1 11
+        default 6
+
+    config EDGE_BATT_DIVIDER_X1000
+        int "Battery divider ratio x1000 (Heltec V3: 390k/100k = 4900)"
+        default 4900
+
+    choice EDGE_BATT_CTRL
+        prompt "Battery measurement enable level on GPIO37"
+        default EDGE_BATT_CTRL_AUTO
+        config EDGE_BATT_CTRL_AUTO
+            bool "Detect at boot"
+        config EDGE_BATT_CTRL_LOW
+            bool "Active low (board rev 3.0 / 3.1)"
+        config EDGE_BATT_CTRL_HIGH
+            bool "Active high (board rev 3.2)"
+    endchoice
+
+    config EDGE_LORA_TCXO_MV
+        int "SX1262 TCXO voltage on DIO3 (mV, 0 = crystal)"
+        default 1800
+
+    config EDGE_LORA_MAX_POWER_DBM
+        int "Highest LoRa transmit power the board allows (dBm)"
+        range 2 22
+        default 22
+
+endmenu
