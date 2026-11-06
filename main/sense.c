@@ -252,15 +252,34 @@ static void flush_probe(probe_ent_t *e, uint8_t flags)
     write_record(EDGE_REC_WIFI_PROBE, &e->w, &b, sizeof(b), flags);
 }
 
-/* Returns a free slot, evicting (and writing) the least recently heard one if full. */
-#define FIND_SLOT(arr, n, flushfn)                                                                 \
+/* A sighting pushed out of a full table is "brief" when it was heard once or for under 5 s:
+ * it is counted (one summary record a minute) instead of written. */
+#define BRIEF_MS 5000
+static uint32_t s_brief_pending[3]; /* BLE, AP, probe since the last summary */
+
+static bool win_brief(const win_t *w)
+{
+    return w->count <= 1 || w->last - w->first < BRIEF_MS;
+}
+
+/* Returns a free slot. When the table is full the newcomer still gets one: the sighting with the
+ * weakest strongest-signal (usually the farthest device) is pushed out, oldest first on a tie.
+ * Pushed-out sightings are written, or only counted when brief. */
+#define FIND_SLOT(arr, n, flushfn, kind)                                                           \
     ({                                                                                             \
-        int _free = -1, _lru = 0;                                                                  \
+        int _free = -1, _weak = 0;                                                                 \
         for (int _i = 0; _i < (n); _i++) {                                                         \
             if (!(arr)[_i].w.used) { _free = _i; break; }                                          \
-            if ((arr)[_i].w.last < (arr)[_lru].w.last) _lru = _i;                                  \
+            const win_t *_a = &(arr)[_i].w, *_b = &(arr)[_weak].w;                                 \
+            if (_a->rssi_max < _b->rssi_max || (_a->rssi_max == _b->rssi_max && _a->last < _b->last)) \
+                _weak = _i;                                                                        \
         }                                                                                          \
-        if (_free < 0) { flushfn(&(arr)[_lru], 0); (arr)[_lru].w.used = false; _free = _lru; }     \
+        if (_free < 0) {                                                                           \
+            if (win_brief(&(arr)[_weak].w)) s_brief_pending[kind]++;                               \
+            else flushfn(&(arr)[_weak], 0);                                                        \
+            (arr)[_weak].w.used = false;                                                           \
+            _free = _weak;                                                                         \
+        }                                                                                          \
         _free;                                                                                     \
     })
 
@@ -329,7 +348,7 @@ static void on_ble(const sense_ble_report_t *r, int64_t t)
     }
     bool is_new = false;
     if (!e) {
-        e = &s_ble[FIND_SLOT(s_ble, MAX_BLE, flush_ble)];
+        e = &s_ble[FIND_SLOT(s_ble, MAX_BLE, flush_ble, 0)];
         memset(e, 0, sizeof(*e));
         win_open(&e->w, t, r->rssi);
         memcpy(e->b.addr, r->addr, 6);
@@ -373,7 +392,7 @@ static void on_ap(const sense_ap_report_t *r, int64_t t)
     }
     bool is_new = false;
     if (!e) {
-        e = &s_ap[FIND_SLOT(s_ap, MAX_AP, flush_ap)];
+        e = &s_ap[FIND_SLOT(s_ap, MAX_AP, flush_ap, 1)];
         memset(e, 0, sizeof(*e));
         win_open(&e->w, t, r->rssi);
         memcpy(e->b.bssid, r->bssid, 6);
@@ -434,7 +453,7 @@ static void on_probe(const sense_probe_report_t *r, int64_t t)
     }
     bool is_new = false;
     if (!e) {
-        e = &s_probe[FIND_SLOT(s_probe, MAX_PROBE, flush_probe)];
+        e = &s_probe[FIND_SLOT(s_probe, MAX_PROBE, flush_probe, 2)];
         memset(e, 0, sizeof(*e));
         win_open(&e->w, t, r->rssi);
         memcpy(e->b.mac, r->mac, 6);
@@ -498,6 +517,27 @@ static void maintain(bool all)
     if (s_ble) MAINTAIN(s_ble, MAX_BLE, flush_ble);
     if (s_ap) MAINTAIN(s_ap, MAX_AP, flush_ap);
     if (s_probe) MAINTAIN(s_probe, MAX_PROBE, flush_probe);
+}
+
+/* Once a minute: one event record with how many brief sightings were only counted. */
+static void brief_summary(int64_t t, bool force)
+{
+    static int64_t last;
+    uint32_t *p = s_brief_pending;
+    if (!p[0] && !p[1] && !p[2]) {
+        last = t;
+        return;
+    }
+    if (!force && t - last < 60000) return;
+    last = t;
+    char d[96];
+    snprintf(d, sizeof(d), "table full: brief sightings counted, not kept: BLE %lu, AP %lu, probe %lu",
+             (unsigned long)p[0], (unsigned long)p[1], (unsigned long)p[2]);
+    s_st.brief_ble += p[0];
+    s_st.brief_ap += p[1];
+    s_st.brief_probe += p[2];
+    p[0] = p[1] = p[2] = 0;
+    edge_record_event(EDGE_EVT_BRIEF, d);
 }
 
 static int count_open(void)
@@ -571,6 +611,7 @@ static void do_stop(void)
     apply_radios();
     xSemaphoreTake(s_lock, portMAX_DELAY);
     maintain(true); /* write every open sighting */
+    brief_summary(edge_uptime_ms(), true);
     free_tables();
     xSemaphoreGive(s_lock);
     ESP_LOGI(TAG, "awareness stopped");
@@ -613,6 +654,7 @@ static void sense_task(void *arg)
             last_maint = t;
             xSemaphoreTake(s_lock, portMAX_DELAY);
             maintain(false);
+            brief_summary(t, false);
             count_open();
             xSemaphoreGive(s_lock);
         }

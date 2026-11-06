@@ -181,7 +181,10 @@ mode:
 ## Privacy choices
 
 * Observations stay on the Edge until a bonded phone or an authenticated
-  setup-page session reads them. Outbound connections, only while the Edge
+  setup-page session reads them. While the Sotreus app is connected over
+  Bluetooth and has asked for it, new records go straight to the phone and
+  are stored on the Edge only if the phone does not confirm them (see
+  docs/protocol.md, "Phone hand-off"), which also saves flash wear. Outbound connections, only while the Edge
   has joined a network:
   * network time (SNTP to `pool.ntp.org`)
   * in Mesh mode, the MQTT broker you configure (off by default)

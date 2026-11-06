@@ -50,6 +50,7 @@ typedef struct {
     uint32_t wifi_frames;
     uint32_t records;
     uint32_t queue_drops;
+    uint32_t brief_ble, brief_ap, brief_probe; /* brief sightings pushed out of a full table and only counted */
 } sense_stats_t;
 
 typedef enum {

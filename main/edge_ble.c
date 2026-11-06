@@ -22,6 +22,7 @@
 #include "edge_api.h"
 #include "edge_config.h"
 #include "edge_log.h"
+#include "edge_stream.h"
 #include "edge_time.h"
 #include "mesh.h"
 #include "sense.h"
@@ -55,6 +56,7 @@ typedef struct {
 } conn_t;
 
 static SemaphoreHandle_t s_lock;
+static SemaphoreHandle_t s_rec_lock; /* one record at a time on the records characteristic (sync and live) */
 static conn_t s_conn[MAX_CONN];
 static uint16_t h_info, h_ctrl, h_events, h_records;
 static uint8_t s_own_addr_type;
@@ -66,6 +68,16 @@ static volatile uint32_t s_passkey;
 static bool s_adv_pairing_mode;
 static char s_name[24];
 static esp_timer_handle_t s_tick;
+
+/* True if this phone has a stored bond (the link can re-encrypt without pairing). */
+static bool peer_bonded(const ble_addr_t *addr)
+{
+    struct ble_store_key_sec key;
+    struct ble_store_value_sec value;
+    memset(&key, 0, sizeof(key));
+    key.peer_addr = *addr;
+    return ble_store_read_peer_sec(&key, &value) == 0;
+}
 
 static int gap_event(struct ble_gap_event *event, void *arg);
 static void advertise(void);
@@ -176,6 +188,29 @@ bool edge_ble_has_subscriber(void)
     return false;
 }
 
+int edge_ble_notify_record(int conn, const edge_rec_t *rec)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    conn_t *c = conn_find((uint16_t)conn);
+    bool ok = c && c->secured && c->sub_records;
+    uint16_t mtu = c ? c->mtu : 23;
+    xSemaphoreGive(s_lock);
+    if (!ok) return -1;
+    xSemaphoreTake(s_rec_lock, portMAX_DELAY);
+    int rc = notify_stream((uint16_t)conn, h_records, mtu, (const uint8_t *)rec, sizeof(edge_rec_t));
+    xSemaphoreGive(s_rec_lock);
+    return rc ? -1 : 0;
+}
+
+bool edge_ble_records_ready(int conn)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    conn_t *c = conn_find((uint16_t)conn);
+    bool ok = c && c->secured && c->sub_records;
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
 int edge_ble_stream_records(int conn, uint32_t from, uint32_t limit, uint32_t *next)
 {
     const int batch = 8;
@@ -198,7 +233,10 @@ int edge_ble_stream_records(int conn, uint32_t from, uint32_t limit, uint32_t *n
         int n = edge_log_read_from(cursor, recs, want);
         if (n <= 0) break;
         for (int i = 0; i < n; i++) {
-            if (notify_stream((uint16_t)conn, h_records, mtu, (const uint8_t *)&recs[i], sizeof(edge_rec_t))) {
+            xSemaphoreTake(s_rec_lock, portMAX_DELAY);
+            int rc = notify_stream((uint16_t)conn, h_records, mtu, (const uint8_t *)&recs[i], sizeof(edge_rec_t));
+            xSemaphoreGive(s_rec_lock);
+            if (rc) {
                 result = -1;
                 break;
             }
@@ -444,8 +482,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 ble_gap_terminate(event->connect.conn_handle, BLE_ERR_CONN_LIMIT);
             } else {
                 ESP_LOGI(TAG, "connected (%d)", event->connect.conn_handle);
-                /* Ask for security right away; bonded phones re-encrypt silently. */
-                ble_gap_security_initiate(event->connect.conn_handle);
+                /* Bonded phones re-encrypt right away. A new phone starts pairing itself: if the Edge
+                 * asked first, Android would ask its owner for consent before pairing, and the
+                 * passkey would time out waiting behind a notification. */
+                struct ble_gap_conn_desc d;
+                if (ble_gap_conn_find(event->connect.conn_handle, &d) == 0 && peer_bonded(&d.peer_id_addr)) {
+                    ble_gap_security_initiate(event->connect.conn_handle);
+                }
             }
         }
         advertise();
@@ -457,6 +500,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         conn_t *c = conn_find(event->disconnect.conn.conn_handle);
         if (c) c->used = false;
         xSemaphoreGive(s_lock);
+        edge_stream_link_down(event->disconnect.conn.conn_handle); /* unconfirmed records go to flash */
         s_passkey_active = false;
         ESP_LOGI(TAG, "disconnected (reason 0x%x)", event->disconnect.reason);
         advertise();
@@ -519,6 +563,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             if (event->subscribe.attr_handle == h_records) c->sub_records = event->subscribe.cur_notify;
         }
         xSemaphoreGive(s_lock);
+        if (event->subscribe.attr_handle == h_records && !event->subscribe.cur_notify) {
+            edge_stream_link_down(event->subscribe.conn_handle);
+        }
         return 0;
     }
 
@@ -571,6 +618,7 @@ static void host_task(void *param)
 esp_err_t edge_ble_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
+    s_rec_lock = xSemaphoreCreateMutex();
     snprintf(s_name, sizeof(s_name), "Sotreus Edge %s", edge_identity()->suffix);
 
     esp_err_t err = nimble_port_init();

@@ -105,6 +105,9 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `access` | | `pin`, `ap_ssid`, `ap_password` |
 | `new_pin` | | `pin`; ends every HTTP session |
 | `sync` | `from`, optional `limit` | BLE only. Response has `oldest`, `head`; then records stream on `records`, then a `sync_done` event |
+| `stream_start` | | Bluetooth only, after subscribing to the records characteristic. From now on every new record is sent on the records characteristic (raw 256 bytes, as in `sync`) instead of being stored. Result: `stored_head`, the newest stored seq, so the app can `sync` what was stored before. See "Phone hand-off" below. |
+| `stream_ack` | `seq` | the app has every record up to and including `seq` |
+| `stream_stop` | | ends the hand-off; records not yet confirmed are stored |
 | `records` | `from`, `limit ≤ 20` | `records` (JSON views), `next` |
 | `log_erase` | `confirm: true` | erases every record in the background (sequence numbers never repeat) |
 | `watch` | `kind`: `ble` \| `wifi`, `addr`, `seconds ≤ 600` | streams `rssi` events for one device (proximity check) |
@@ -140,10 +143,11 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 |---|---|---|
 | `resp` | reply to a command | see above |
 | `status` | every 10 s while a client listens | `status` |
-| `obs` | a record was written | WebSocket: a binary frame with the raw record. Bluetooth: `seq`, `type`; read it with `sync`. |
+| `obs` | a record was written | WebSocket: a binary frame with the raw record. Bluetooth: `seq`, `type`; read it with `sync` (not sent during a hand-off, when the record itself arrives on the records characteristic). |
 | `seen` | a device was first heard in a new sighting window | `kind`, `addr`, `rssi`, `label?`, `uptime_ms`, `body?`: base64 of the record body this window would be written with now (section 4 layout for `kind`, trailing zero bytes trimmed; pad with zeros to decode). Lets the app classify a device when it is first heard. |
 | `rssi` | during `watch`, at most 4 Hz | `kind`, `addr`, `rssi`, `channel?`, `uptime_ms`, `unix_ms?` |
 | `mode` | a mode change was saved | `mode`, `restarting: true` |
+| `stream` | the phone hand-off started or stopped | `state` (`started` / `stopped`), `reason` |
 | `mesh_admin` | a remote admin request arrived | `from`, `request` (AdminMessage field), `outcome` (`answered`, `applied`, `refused`, …) |
 | `mesh_tak` | a TAK packet arrived | `from` |
 | `mesh_rhw` | a remote hardware request arrived | `from`, `request` (HardwareMessage type), `outcome` |
@@ -184,6 +188,25 @@ All multi-byte fields are little-endian.
 it, they are milliseconds since boot number `boot`, because the Edge had no
 wall time yet. Keep these records labelled "time not known" unless the app
 can anchor that boot itself, and never present them as fresh.
+
+**Phone hand-off.** While a bonded phone has sent `stream_start`, new records
+go to it instead of flash. Each still gets the next `seq`, so `(device_id,
+seq)` stays unique and records the phone already has never come back under
+another number. The phone confirms with `stream_ack` (cumulative); the Edge
+holds up to 32 unconfirmed records in RAM and writes them to flash, oldest
+first, when that buffer fills, when no confirmation arrives for 30 s, or when
+the link drops, the app unsubscribes or sends `stream_stop`. Stored `seq`
+values therefore still only increase, with gaps where records went to the
+phone. A phone should de-duplicate by `seq` (a record confirmed late may also
+be stored). Sequence numbers survive restarts: the Edge keeps a floor in NVS
+1,024 ahead of the last one used.
+
+**Full tables.** The Edge keeps open sightings in RAM tables (128 Bluetooth,
+48 access points, 48 probing devices). When a table is full a newcomer still
+gets a slot: the sighting with the weakest strongest signal (oldest on a tie)
+is pushed out. A pushed-out sighting heard once or for under 5 s is only
+counted; once a minute an event record (code 7) gives the counts, and
+`status.awareness.brief_counted` keeps the totals since boot.
 
 **Sightings.** Types 1-3 summarise one device over a window: written when it
 has been quiet for `close_after_s` (default 60 s), or every `max_window_s`
@@ -277,7 +300,7 @@ Reserved for Edges with a GNSS receiver (`caps.gnss`); this firmware never write
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 2 | code: 1 boot, 2 mode, 3 time set, 4 log erased, 5 config, 6 firmware |
+| 0 | 2 | code: 1 boot, 2 mode, 3 time set, 4 log erased, 5 config, 6 firmware, 7 brief sightings counted |
 | 2 | 1 | detail length |
 | 3 | 221 | detail text |
 

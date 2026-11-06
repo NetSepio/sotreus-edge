@@ -10,6 +10,7 @@
 
 #include "edge_ble.h"
 #include "edge_http.h"
+#include "edge_stream.h"
 #include "edge_records.h"
 
 typedef struct {
@@ -35,7 +36,7 @@ static void events_task(void *arg)
                 char note[64];
                 int n = snprintf(note, sizeof(note), "{\"ev\":\"obs\",\"seq\":%lu,\"type\":%u}\n",
                                  (unsigned long)r->seq, r->type);
-                edge_ble_send_line(-1, note, (size_t)n);
+                if (!edge_stream_active()) edge_ble_send_line(-1, note, (size_t)n); /* the phone already has it */
                 edge_http_ws_send(-1, it.line, it.len, true);
             } else {
                 edge_ble_send_line(-1, it.line, it.len);

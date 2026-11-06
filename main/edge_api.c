@@ -19,6 +19,7 @@
 #include "edge_battery.h"
 #include "edge_config.h"
 #include "edge_meshmod.h"
+#include "edge_stream.h"
 #include "edge_log.h"
 #include "edge_records.h"
 #include "edge_time.h"
@@ -292,6 +293,10 @@ cJSON *edge_api_status_json(void)
     cJSON_AddNumberToObject(sj, "wifi_frames", ss.wifi_frames);
     cJSON_AddNumberToObject(sj, "records", ss.records);
     cJSON_AddNumberToObject(sj, "queue_drops", ss.queue_drops);
+    cJSON *brf = cJSON_AddObjectToObject(sj, "brief_counted");
+    cJSON_AddNumberToObject(brf, "ble", ss.brief_ble);
+    cJSON_AddNumberToObject(brf, "wifi_ap", ss.brief_ap);
+    cJSON_AddNumberToObject(brf, "wifi_probe", ss.brief_probe);
 
     edge_log_stats_t ls;
     edge_log_stats(&ls);
@@ -303,6 +308,7 @@ cJSON *edge_api_status_json(void)
     cJSON_AddBoolToObject(lj, "erasing", ls.erasing);
     cJSON_AddNumberToObject(lj, "write_failures", ls.failed);
 
+    cJSON_AddItemToObject(o, "stream", edge_stream_status_json());
     cJSON_AddItemToObject(o, "mesh", mesh_status_json());
     cJSON_AddNumberToObject(o, "events_dropped", edge_events_dropped());
     free(cfg);
@@ -1165,6 +1171,23 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         edge_identity_new_pin();
         r = ok_resp();
         cJSON_AddStringToObject(r, "pin", edge_identity()->access_pin);
+    } else if (strcmp(cmd, "stream_start") == 0) {
+        if (origin != EDGE_SINK_BLE) return err_resp("the hand-off runs over Bluetooth only");
+        esp_err_t e = edge_stream_start(target);
+        if (e == ESP_ERR_INVALID_STATE) return err_resp("subscribe to the records characteristic first");
+        if (e == ESP_ERR_NOT_SUPPORTED) return err_resp("another phone already receives the hand-off");
+        if (e != ESP_OK) return err_resp("no memory");
+        edge_log_stats_t ls;
+        edge_log_stats(&ls);
+        r = ok_resp();
+        cJSON_AddNumberToObject(r, "stored_head", ls.head_seq); /* sync up to here for what was stored before */
+    } else if (strcmp(cmd, "stream_ack") == 0) {
+        if (!jnum(req, "seq", &n) || n < 1) return err_resp("missing seq");
+        edge_stream_ack((uint32_t)n);
+        r = ok_resp();
+    } else if (strcmp(cmd, "stream_stop") == 0) {
+        edge_stream_stop();
+        r = ok_resp();
     } else if (strcmp(cmd, "sync") == 0) {
         if (origin != EDGE_SINK_BLE) return err_resp("sync streams over Bluetooth; use GET /api/records over HTTP");
         if (s_sync_busy) return err_resp("a sync is already running");

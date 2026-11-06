@@ -699,6 +699,7 @@ function renderStatus(s) {
     ["Access points heard now", a.open_sightings.wifi_ap],
     ["Probing devices heard now", a.open_sightings.wifi_probe],
     ["Records written since start", a.records],
+    ...(a.brief_counted && (a.brief_counted.ble + a.brief_counted.wifi_ap + a.brief_counted.wifi_probe) ? [["Brief sightings counted, not kept (table full)", a.brief_counted.ble + " BLE · " + a.brief_counted.wifi_ap + " AP · " + a.brief_counted.wifi_probe + " probe"]] : []),
   ]);
   const m = s.mesh, c = m.counters || {};
   kv("#meshKv", [
@@ -709,7 +710,9 @@ function renderStatus(s) {
     ["Radio", m.radio ? m.radio.chip_mode + " · channel " + m.radio.rssi_now + " dBm" : (m.radio_present ? "ready" : "not responding")],
   ]);
   const g = s.log;
-  kv("#logKv", [["Stored", g.count + " of " + g.capacity], ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"], ["State", g.erasing ? "erasing" : "ready"]]);
+  const sm = s.stream || {};
+  kv("#logKv", [["Stored", g.count + " of " + g.capacity], ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"], ["State", g.erasing ? "erasing" : "ready"],
+    ["Phone hand-off", sm.active ? "on: new records go to the phone (" + sm.delivered + " confirmed, " + sm.unconfirmed + " waiting)" : "off: new records are stored here" + (sm.written_to_flash ? " (" + sm.written_to_flash + " stored after hand-offs ended)" : "")]]);
   const banner = $("#meshBanner");
   if (!m.radio_present) { banner.textContent = "The LoRa radio did not respond."; banner.classList.remove("hidden"); }
   else if (!m.region) { banner.textContent = "Set the LoRa region in Settings before the Edge can send or receive on the mesh."; banner.classList.remove("hidden"); }
@@ -787,7 +790,7 @@ $("#pairBtn").onclick = () => run({ cmd: "pairing_open", seconds: 120 }, "Pairin
 const REC_SIZE = 256;
 const REC_TYPES = { 1: "ble", 2: "wifi_ap", 3: "wifi_probe", 4: "mesh_text", 5: "event" };
 const AUTH = { 0: "open", 1: "wep", 2: "wpa", 3: "wpa2", 4: "wpa3", 5: "wpa2_wpa3", 6: "enterprise", 7: "owe" };
-const EVENTS = { 1: "boot", 2: "mode", 3: "time_set", 4: "log_erased", 5: "config", 6: "firmware" };
+const EVENTS = { 1: "boot", 2: "mode", 3: "time_set", 4: "log_erased", 5: "config", 6: "firmware", 7: "brief sightings counted" };
 const utf8 = new TextDecoder("utf-8");
 const hexb = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
 const mac = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join(":");

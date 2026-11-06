@@ -109,6 +109,7 @@ typedef enum {
     EDGE_EVT_LOG_ERASED = 4,
     EDGE_EVT_CONFIG = 5,
     EDGE_EVT_FIRMWARE = 6,
+    EDGE_EVT_BRIEF = 7,      /* brief sightings counted, not kept one by one (full table), detail has the counts */
 } edge_event_code_t;
 
 typedef struct __attribute__((packed)) {
