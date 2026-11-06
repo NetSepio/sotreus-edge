@@ -25,6 +25,7 @@
 #include "edge_log.h"
 #include "edge_portal.h"
 #include "edge_records.h"
+#include "edge_stream.h"
 #include "edge_time.h"
 #include "edge_wifi.h"
 #include "mesh.h"
@@ -135,6 +136,7 @@ void app_main(void)
     ESP_ERROR_CHECK(edge_config_init());
     edge_time_load_tz();
     if (edge_log_init() != ESP_OK) ESP_LOGE(TAG, "record log unavailable");
+    edge_stream_init();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     edge_events_init();

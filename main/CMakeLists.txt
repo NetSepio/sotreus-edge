@@ -12,6 +12,7 @@ idf_component_register(
         "edge_log.c"
         "edge_portal.c"
         "edge_records.c"
+        "edge_stream.c"
         "edge_time.c"
         "edge_util.c"
         "edge_wifi.c"

@@ -16,6 +16,7 @@ import secrets
 import struct
 import time
 import urllib.parse
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -38,6 +39,7 @@ STATE = {
     "ctx": {},
     "config": {
         "mode": "awareness", "link": "auto",
+        "placement": {"mode": "travel"},
         "awareness": {"ble": True, "ble_active": True, "wifi_aps": True, "wifi_probes": True, "probe_names": False,
                       "rssi_floor": -100, "close_after_s": 60, "max_window_s": 300},
         "display": {"timeout_s": 60},
@@ -200,8 +202,26 @@ def record_bin(seq):
         body[12:16] = struct.pack("<I", r["count"])
         for i, h in enumerate(r["ssid_hashes"]):
             body[16 + 4 * i:20 + 4 * i] = struct.pack("<I", int(h, 16))
-    head = struct.pack("<IBBHqq", seq, REC_TYPE[r["type"]], 1, r["boot"], r["first_unix_ms"], r["last_unix_ms"])
-    return head + bytes(28 - len(head)) + bytes(body)
+    body = bytes(body[:224])
+    body_len = {"ble": 80, "wifi_ap": 172, "wifi_probe": 164}[r["type"]]
+    head = struct.pack("<IBBHqqHH", seq, REC_TYPE[r["type"]], 1, r["boot"], r["first_unix_ms"], r["last_unix_ms"],
+                       body_len, 1)
+    rec = head + body
+    return rec + struct.pack("<I", zlib.crc32(rec) & 0xFFFFFFFF)
+
+
+def live_rows(offset, limit):
+    """Open sightings for the `live` command, strongest first."""
+    rows = []
+    for seq in range(200, 230):
+        r = record(seq)
+        addr = (r.get("addr") or r.get("bssid") or r.get("mac")).upper()
+        rows.append([r["type"], addr, r["rssi"]["last"], r["rssi"]["max"], (seq * 1700) % 58000, r["count"]])
+    rows.sort(key=lambda x: -x[2])
+    limit = max(1, min(int(limit), 100))
+    page = rows[offset:offset + limit]
+    nxt = offset + limit if offset + limit < len(rows) else None
+    return page, len(rows), nxt
 
 
 def node_by_id(nid):
@@ -217,9 +237,18 @@ def handle_cmd(req, args):
                                "vendor_url": "https://netsepio.com", "product_url": "https://sotreus.com",
                                "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.1.0", "idf": "v6.0.1",
                                "hw": "heltec_wifi_lora_32_v3", "boot": 9, "record_size": 256, "record_format": 1,
-                               "probe_salt": "00", "caps": {}}}
+                               "probe_salt": "00",
+                               "caps": {"ble_observation": True, "wifi24_observation": True, "wifi_probe_observation": True,
+                                        "gnss": False, "local_storage": True, "firmware_switching": False,
+                                        "meshtastic_mode": True, "lora": True, "display": True, "battery": True,
+                                        "ota_upload": True, "live_sightings": True, "placement": True}}}
     if c == "status":
         return {**ok, "status": status(args)}
+    if c == "live":
+        if cfg["mode"] != "awareness":
+            return {"ev": "resp", "ok": False, "error": "not listening (Mesh mode or stopped)"}
+        page, total, nxt = live_rows(int(req.get("offset", 0)), req.get("limit", 100))
+        return {**ok, "rows": page, "total": total, "next": nxt, "uptime_ms": int((time.time() - START) * 1000)}
     if c == "get_config":
         return {**ok, "config": cfg}
     if c in ("set_config", "set_mode"):

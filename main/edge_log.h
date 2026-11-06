@@ -61,6 +61,19 @@ esp_err_t edge_log_init(void);
  */
 esp_err_t edge_log_append(edge_rec_t *rec);
 
+/**
+ * Live hand-off: when a hook is set and returns true, the record (already given its seq)
+ * went to the phone instead of flash. The hook runs while records are ordered, so it must
+ * not call edge_log_append itself.
+ */
+typedef bool (*edge_log_hook_t)(edge_rec_t *rec);
+void edge_log_set_hook(edge_log_hook_t hook);
+/** Holds back new records while the caller writes handed-off ones to flash in order. */
+void edge_log_route_lock(void);
+void edge_log_route_unlock(void);
+/** Writes a record that already has its seq (call with the route lock held). */
+esp_err_t edge_log_write_assigned(edge_rec_t *rec);
+
 /** Reads up to `max` records with seq >= from_seq, oldest first. Returns count. */
 int edge_log_read_from(uint32_t from_seq, edge_rec_t *out, int max);
 

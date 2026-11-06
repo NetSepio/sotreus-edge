@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "edge_log.h"
 
 typedef struct {
     int connections;
@@ -43,6 +44,11 @@ bool edge_ble_has_subscriber(void);
  * `*next` receives the seq to resume from.
  */
 int edge_ble_stream_records(int conn, uint32_t from, uint32_t limit, uint32_t *next);
+
+/** Sends one record on the records characteristic. 0 = sent, -1 = link gone or not subscribed. */
+int edge_ble_notify_record(int conn, const edge_rec_t *rec);
+/** True when conn is a secured link subscribed to the records characteristic. */
+bool edge_ble_records_ready(int conn);
 
 /** Accept new pairings for `seconds`. */
 void edge_ble_open_pairing(uint32_t seconds);

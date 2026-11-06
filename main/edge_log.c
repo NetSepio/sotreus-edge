@@ -30,6 +30,10 @@ static uint32_t s_head_seq;
 static uint32_t s_next_seq = 1;
 static volatile bool s_erasing;
 static uint32_t s_written, s_failed;
+static SemaphoreHandle_t s_route;   /* orders sequence numbers with where each record goes */
+static uint32_t s_floor_saved;      /* sequence numbers below this are safe from reuse after a restart */
+static edge_log_hook_t s_hook;
+#define FLOOR_STEP 1024
 
 static uint32_t rec_crc(const edge_rec_t *r)
 {
@@ -74,6 +78,7 @@ static uint32_t oldest_locked(void)
 esp_err_t edge_log_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
+    s_route = xSemaphoreCreateMutex();
     s_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "obslog");
     if (!s_part) {
         ESP_LOGE(TAG, "obslog partition missing");
@@ -115,6 +120,7 @@ esp_err_t edge_log_init(void)
     uint32_t floor = edge_seq_floor_get();
     s_next_seq = s_head_seq + 1;
     if (s_next_seq < floor) s_next_seq = floor;
+    s_floor_saved = floor;
     if (s_next_seq == 0) s_next_seq = 1;
 
     ESP_LOGI(TAG, "%lu slots, head seq %lu, oldest %lu, next %lu", (unsigned long)s_cap,
@@ -122,12 +128,8 @@ esp_err_t edge_log_init(void)
     return ESP_OK;
 }
 
-esp_err_t edge_log_append(edge_rec_t *rec)
+static void prepare(edge_rec_t *rec)
 {
-    if (!s_part) return ESP_ERR_INVALID_STATE;
-    if (s_erasing) return ESP_ERR_INVALID_STATE;
-
-    /* Convert times. */
     int64_t f = edge_time_to_unix_ms(rec->first_ms);
     int64_t l = edge_time_to_unix_ms(rec->last_ms);
     rec->flags &= (uint8_t)~EDGE_RECF_TIME_VALID;
@@ -142,7 +144,25 @@ esp_err_t edge_log_append(edge_rec_t *rec)
     if (rec->body_len < EDGE_REC_BODY_MAX) {
         memset(rec->body + rec->body_len, 0, EDGE_REC_BODY_MAX - rec->body_len);
     }
+}
 
+/* Every record gets the next sequence number whether it is stored or handed to the phone.
+ * The floor in NVS runs ahead, so numbers handed to the phone are never reused after a restart. */
+static void assign_seq(edge_rec_t *rec)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    rec->seq = s_next_seq++;
+    bool save = s_next_seq >= s_floor_saved;
+    if (save) s_floor_saved = s_next_seq + FLOOR_STEP;
+    uint32_t floor = s_floor_saved;
+    xSemaphoreGive(s_lock);
+    if (save) edge_seq_floor_set(floor);
+    rec->crc = rec_crc(rec);
+}
+
+/* Writes a record that already has its sequence number (always higher than any stored one). */
+static esp_err_t write_slot(edge_rec_t *rec)
+{
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_erasing) {
         xSemaphoreGive(s_lock);
@@ -159,16 +179,11 @@ esp_err_t edge_log_append(edge_rec_t *rec)
         err = esp_partition_erase_range(s_part, (size_t)sect * SECT_SIZE, SECT_SIZE);
         s_first[sect] = 0;
     }
-    if (err == ESP_OK) {
-        rec->seq = s_next_seq;
-        rec->crc = rec_crc(rec);
-        err = esp_partition_write(s_part, (size_t)slot * EDGE_REC_SIZE, rec, EDGE_REC_SIZE);
-    }
+    if (err == ESP_OK) err = esp_partition_write(s_part, (size_t)slot * EDGE_REC_SIZE, rec, EDGE_REC_SIZE);
     if (err == ESP_OK) {
         if (slot % PER_SECT == 0) s_first[sect] = rec->seq;
         s_head_slot = (int32_t)slot;
         s_head_seq = rec->seq;
-        s_next_seq++;
         s_written++;
     } else {
         s_failed++;
@@ -176,6 +191,40 @@ esp_err_t edge_log_append(edge_rec_t *rec)
     }
     xSemaphoreGive(s_lock);
     return err;
+}
+
+esp_err_t edge_log_append(edge_rec_t *rec)
+{
+    if (!s_part) return ESP_ERR_INVALID_STATE;
+    if (s_erasing) return ESP_ERR_INVALID_STATE;
+    prepare(rec);
+    xSemaphoreTake(s_route, portMAX_DELAY);
+    assign_seq(rec);
+    esp_err_t err = ESP_OK;
+    if (!(s_hook && s_hook(rec))) err = write_slot(rec);
+    xSemaphoreGive(s_route);
+    return err;
+}
+
+void edge_log_set_hook(edge_log_hook_t hook)
+{
+    s_hook = hook;
+}
+
+void edge_log_route_lock(void)
+{
+    xSemaphoreTake(s_route, portMAX_DELAY);
+}
+
+void edge_log_route_unlock(void)
+{
+    xSemaphoreGive(s_route);
+}
+
+esp_err_t edge_log_write_assigned(edge_rec_t *rec)
+{
+    if (!s_part) return ESP_ERR_INVALID_STATE;
+    return write_slot(rec);
 }
 
 int edge_log_read_from(uint32_t from_seq, edge_rec_t *out, int max)
@@ -240,7 +289,8 @@ static void do_erase(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     /* Never reuse sequence numbers on this device. */
-    edge_seq_floor_set(s_next_seq);
+    s_floor_saved = s_next_seq + FLOOR_STEP;
+    edge_seq_floor_set(s_floor_saved);
     xSemaphoreGive(s_lock);
 
     const size_t block = 64 * 1024;

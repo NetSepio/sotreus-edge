@@ -21,6 +21,7 @@ static SemaphoreHandle_t s_lock;
 static edge_config_t s_cfg;
 static edge_identity_t s_id;
 static edge_mesh_mod_t s_mod;
+static edge_placement_t s_place;
 static void mod_clamp(edge_mesh_mod_t *m);
 
 static void random_text(char *out, size_t len, const char *alphabet)
@@ -316,6 +317,11 @@ esp_err_t edge_config_init(void)
         save_blob("meshmod", &s_mod, sizeof(s_mod));
     }
     mod_clamp(&s_mod);
+    if (load_blob("place", &s_place, sizeof(s_place)) != ESP_OK || s_place.version != EDGE_PLACE_VERSION) {
+        memset(&s_place, 0, sizeof(s_place));
+        s_place.version = EDGE_PLACE_VERSION;
+        s_place.mode = EDGE_PLACE_TRAVEL;
+    }
     ESP_LOGI(TAG, "boot #%lu, mode=%s", (unsigned long)s_id.boot_count,
              s_cfg.mode == EDGE_MODE_MESH ? "mesh" : "awareness");
     return ESP_OK;
@@ -335,6 +341,28 @@ esp_err_t edge_config_set(const edge_config_t *in)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_cfg = c;
     esp_err_t err = save_blob("cfg", &s_cfg, sizeof(s_cfg));
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+void edge_placement_get(edge_placement_t *out)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    *out = s_place;
+    xSemaphoreGive(s_lock);
+}
+
+esp_err_t edge_placement_set(const edge_placement_t *in)
+{
+    edge_placement_t p = *in;
+    p.version = EDGE_PLACE_VERSION;
+    if (p.mode > EDGE_PLACE_STATIONARY) p.mode = EDGE_PLACE_TRAVEL;
+    if (p.source > EDGE_PLACE_SRC_GNSS) p.source = EDGE_PLACE_SRC_NONE;
+    if (p.lat_e7 < -900000000 || p.lat_e7 > 900000000 || p.lon_e7 < -1800000000 || p.lon_e7 > 1800000000) p.positioned = false;
+    if (!p.positioned) p.lat_e7 = p.lon_e7 = 0, p.accuracy_dm = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_place = p;
+    esp_err_t err = save_blob("place", &s_place, sizeof(s_place));
     xSemaphoreGive(s_lock);
     return err;
 }

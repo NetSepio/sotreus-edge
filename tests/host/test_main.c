@@ -178,6 +178,21 @@ static void test_util(void)
 
     CHECK(edge_fnv1a(NULL, 0, (const uint8_t *)"", 0) == 2166136261u);
     CHECK(edge_fnv1a(NULL, 0, (const uint8_t *)"a", 1) == 0xe40c292cu);
+
+    /* seen.body trims trailing zeros; the phone pads them back. */
+    const uint8_t body[] = {1, 0, 2, 0, 0, 0};
+    CHECK(edge_trim_zeros(body, sizeof(body)) == 3);
+    CHECK(edge_trim_zeros(body, 0) == 0);
+    const uint8_t zeros[4] = {0};
+    CHECK(edge_trim_zeros(zeros, sizeof(zeros)) == 0);
+
+    /* live rows */
+    char row[96];
+    const uint8_t lmac[6] = {0xca, 0x2a, 0xf0, 0xe6, 0xb6, 0x01};
+    int rn = edge_live_row(row, sizeof(row), "wifi_probe", lmac, -52, -44, 1200, 4);
+    CHECK(rn > 0 && strcmp(row, "[\"wifi_probe\",\"ca:2a:f0:e6:b6:01\",-52,-44,1200,4]") == 0);
+    CHECK(edge_live_row(row, sizeof(row), "ble", lmac, -60, -50, -5, 1) > 0 && strstr(row, ",0,1]") != NULL);
+    CHECK(edge_live_row(row, 10, "ble", lmac, -60, -50, 1, 1) == -1);
 }
 
 /* Query for "captive.apple.com" with the given type, plus an EDNS OPT record. */

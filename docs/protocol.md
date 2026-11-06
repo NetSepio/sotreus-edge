@@ -105,10 +105,14 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `access` | | `pin`, `ap_ssid`, `ap_password` |
 | `new_pin` | | `pin`; ends every HTTP session |
 | `sync` | `from`, optional `limit` | BLE only. Response has `oldest`, `head`; then records stream on `records`, then a `sync_done` event |
+| `stream_start` | | Bluetooth only, after subscribing to the records characteristic. From now on every new record is sent on the records characteristic (raw 256 bytes, as in `sync`) instead of being stored. Result: `stored_head`, the newest stored seq, so the app can `sync` what was stored before. See "Phone hand-off" below. |
+| `stream_ack` | `seq` | the app has every record up to and including `seq` |
+| `stream_stop` | | ends the hand-off; records not yet confirmed are stored |
 | `records` | `from`, `limit ≤ 20` | `records` (JSON views), `next` |
 | `log_erase` | `confirm: true` | erases every record in the background (sequence numbers never repeat) |
 | `watch` | `kind`: `ble` \| `wifi`, `addr`, `seconds ≤ 600` | streams `rssi` events for one device (proximity check) |
 | `unwatch` | | |
+| `live` | optional `offset` (default 0), optional `limit` (1-100, default 100) | `rows`: open sightings as `[kind, addr, rssi_last, rssi_max, ago_ms, count]`, strongest `rssi_last` first; `kind` is `ble`, `wifi_ap` or `wifi_probe`; `ago_ms` is how long ago the Edge last heard it, measured on the Edge. Also `total`, `next` (offset of the next page, `null` on the last), `uptime_ms`. Error while awareness is not running (Mesh mode). Needs `caps.live_sightings`. |
 | `mesh_send` | `text` (1-200 bytes), `to` (`broadcast` \| `!aabbccdd` \| number), `channel`, `want_ack`, optional `reply_id`, optional `reaction: true` (the text is one emoji reacting to `reply_id`) | `packet_id`; delivery arrives as `mesh_tx` events. Direct messages to a node whose key is known go PKI-encrypted. |
 | `mesh_canned` | `index` | sends that quick message on the primary channel; `packet_id` |
 | `mesh_traceroute` | `to`, `channel` | `packet_id`; the route arrives as a `mesh_traceroute` event |
@@ -139,10 +143,11 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 |---|---|---|
 | `resp` | reply to a command | see above |
 | `status` | every 10 s while a client listens | `status` |
-| `obs` | a record was written | WebSocket: a binary frame with the raw record. Bluetooth: `seq`, `type`; read it with `sync`. |
-| `seen` | a device was first heard in a new sighting window | `kind`, `addr`, `rssi`, `label?`, `uptime_ms` |
+| `obs` | a record was written | WebSocket: a binary frame with the raw record. Bluetooth: `seq`, `type`; read it with `sync` (not sent during a hand-off, when the record itself arrives on the records characteristic). |
+| `seen` | a device was first heard in a new sighting window | `kind`, `addr`, `rssi`, `label?`, `uptime_ms`, `body?`: base64 of the record body this window would be written with now (section 4 layout for `kind`, trailing zero bytes trimmed; pad with zeros to decode). Lets the app classify a device when it is first heard. |
 | `rssi` | during `watch`, at most 4 Hz | `kind`, `addr`, `rssi`, `channel?`, `uptime_ms`, `unix_ms?` |
 | `mode` | a mode change was saved | `mode`, `restarting: true` |
+| `stream` | the phone hand-off started or stopped | `state` (`started` / `stopped`), `reason` |
 | `mesh_admin` | a remote admin request arrived | `from`, `request` (AdminMessage field), `outcome` (`answered`, `applied`, `refused`, …) |
 | `mesh_tak` | a TAK packet arrived | `from` |
 | `mesh_rhw` | a remote hardware request arrived | `from`, `request` (HardwareMessage type), `outcome` |
@@ -183,6 +188,25 @@ All multi-byte fields are little-endian.
 it, they are milliseconds since boot number `boot`, because the Edge had no
 wall time yet. Keep these records labelled "time not known" unless the app
 can anchor that boot itself, and never present them as fresh.
+
+**Phone hand-off.** While a bonded phone has sent `stream_start`, new records
+go to it instead of flash. Each still gets the next `seq`, so `(device_id,
+seq)` stays unique and records the phone already has never come back under
+another number. The phone confirms with `stream_ack` (cumulative); the Edge
+holds up to 32 unconfirmed records in RAM and writes them to flash, oldest
+first, when that buffer fills, when no confirmation arrives for 30 s, or when
+the link drops, the app unsubscribes or sends `stream_stop`. Stored `seq`
+values therefore still only increase, with gaps where records went to the
+phone. A phone should de-duplicate by `seq` (a record confirmed late may also
+be stored). Sequence numbers survive restarts: the Edge keeps a floor in NVS
+1,024 ahead of the last one used.
+
+**Full tables.** The Edge keeps open sightings in RAM tables (128 Bluetooth,
+48 access points, 48 probing devices). When a table is full a newcomer still
+gets a slot: the sighting with the weakest strongest signal (oldest on a tie)
+is pushed out. A pushed-out sighting heard once or for under 5 s is only
+counted; once a minute an event record (code 7) gives the counts, and
+`status.awareness.brief_counted` keeps the totals since boot.
 
 **Sightings.** Types 1-3 summarise one device over a window: written when it
 has been quiet for `close_after_s` (default 60 s), or every `max_window_s`
@@ -256,11 +280,27 @@ already knows (for example the owner's own networks) and compare.
 | 17 | 1 | text length |
 | 18 | 206 | UTF-8 text (TRUNCATED flag if longer) |
 
+### Type 6: Edge position (reserved)
+
+Reserved for Edges with a GNSS receiver (`caps.gnss`); this firmware never writes it. One fix at
+`first_ms`:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | latitude × 10⁷ (int32) |
+| 4 | 4 | longitude × 10⁷ (int32) |
+| 8 | 4 | altitude, WGS84, mm (int32; `INT32_MIN` = unknown) |
+| 12 | 2 | horizontal accuracy, 0.1 m (`0xFFFF` = unknown) |
+| 14 | 2 | vertical accuracy, 0.1 m (`0xFFFF` = unknown) |
+| 16 | 1 | satellites used |
+| 17 | 1 | fix type: 0 none, 2 2D, 3 3D |
+| 18 | 2 | speed, cm/s (`0xFFFF` = unknown) |
+
 ### Type 5: Edge event (origin `Edge`)
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 2 | code: 1 boot, 2 mode, 3 time set, 4 log erased, 5 config, 6 firmware |
+| 0 | 2 | code: 1 boot, 2 mode, 3 time set, 4 log erased, 5 config, 6 firmware, 7 brief sightings counted |
 | 2 | 1 | detail length |
 | 3 | 221 | detail text |
 
@@ -274,7 +314,8 @@ Static for a boot, so it is safe for long BLE reads:
  "idf":"v6.0.1","hw":"heltec_wifi_lora_32_v3","boot":12,"record_size":256,"record_format":1,
  "probe_salt":"…","caps":{"ble_observation":true,"wifi24_observation":true,
  "wifi_probe_observation":true,"gnss":false,"local_storage":true,"firmware_switching":false,
- "meshtastic_mode":true,"lora":true,"display":true,"battery":true,"ota_upload":true}}
+ "meshtastic_mode":true,"lora":true,"display":true,"battery":true,"ota_upload":true,
+ "live_sightings":true,"placement":true}}
 ```
 
 `firmware_switching` is false because mesh mode is built in. It is not a
@@ -286,6 +327,8 @@ second firmware.
 {
   "mode": "awareness",
   "link": "auto",
+  "placement": {"mode": "stationary", "lat": 12.9716, "lon": 77.5946, "accuracy_m": 8,
+                "set_unix_ms": 1762400000000, "source": "phone"},
   "awareness": {"ble": true, "ble_active": true, "wifi_aps": true, "wifi_probes": true,
                 "probe_names": false, "rssi_floor": -100, "close_after_s": 60, "max_window_s": 300},
   "display": {"timeout_s": 60},
@@ -323,6 +366,13 @@ Each channel also has `uplink` and `downlink` (MQTT). The MQTT password is
 write-only: send `password` to change it; reads show `password_set`.
 
 * `link` is one of `auto`, `ap`, `sta` or `off`.
+* `placement` says how the owner uses the Edge: `travel` (carried; the phone tags sightings
+  with its own location while they are together) or `stationary` (left in one place at
+  `lat`/`lon` ± `accuracy_m`, set from the phone (`source: phone`), a map (`map`) or a GNSS
+  receiver (`gnss`)). The Edge only stores it, in its own NVS key `place`: it does not use it,
+  show it, or send it over the mesh (the mesh position is `mesh.position`). In `set_config`,
+  `lat`, `lon` and `accuracy_m` go together; `"lat": null` clears the position. Without a
+  position the object has only `mode`. Needs `caps.placement`.
 * `mesh.region` is a Meshtastic region name, or `UNSET`. While it is
   `UNSET`, the radio never transmits.
 * `mesh.preset` is one of `LONG_FAST`, `LONG_SLOW`, `LONG_MODERATE`,
