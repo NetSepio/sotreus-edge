@@ -63,6 +63,13 @@ static uint8_t s_own_addr_type;
 static volatile bool s_synced;
 static volatile bool s_scan_want, s_scan_active_mode, s_scanning;
 static volatile int64_t s_pair_until;
+/* Fast advertising after boot and after a link drops, so a bonded phone's background
+ * reconnect finds the Edge in seconds; then back to once a second. */
+#define FAST_ADV_MS 30000
+static volatile int64_t s_fast_until;
+/* Diagnostic: cap on the link-layer payload the Edge sends (0 = controller default). Set from the
+ * USB console only, to tell a phone's trouble with long packets apart from other link faults. */
+static volatile uint16_t s_tx_octets_cap;
 static volatile bool s_passkey_active;
 static volatile uint32_t s_passkey;
 static bool s_adv_pairing_mode;
@@ -417,13 +424,17 @@ static void advertise(void)
     }
     ble_gap_adv_rsp_set_fields(&rsp);
 
+    int64_t now = edge_uptime_ms();
+    bool fast = pairing || now < s_fast_until;
+    /* A fast window ends by itself (ADV_COMPLETE), which restarts advertising slowly. */
+    int32_t duration = pairing || !fast ? BLE_HS_FOREVER : (int32_t)(s_fast_until - now);
     struct ble_gap_adv_params p = {
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = pairing ? BLE_GAP_DISC_MODE_GEN : BLE_GAP_DISC_MODE_NON,
-        .itvl_min = pairing ? 160 : 1600,  /* 100 ms while pairing, 1 s otherwise */
-        .itvl_max = pairing ? 240 : 1920,
+        .itvl_min = fast ? 160 : 1600,  /* 100 ms while pairing or reconnecting, 1 s otherwise */
+        .itvl_max = fast ? 240 : 1920,
     };
-    rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
+    rc = ble_gap_adv_start(s_own_addr_type, NULL, duration, &p, gap_event, NULL);
     if (rc && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "adv start: %d", rc);
 }
 
@@ -461,6 +472,38 @@ static void tick_cb(void *arg)
 
 /* ---- GAP events --------------------------------------------------------------- */
 
+static void apply_data_len(uint16_t conn)
+{
+    uint16_t oct = s_tx_octets_cap;
+    if (!oct) return;
+    int rc = ble_gap_set_data_len(conn, oct, (uint16_t)((oct + 14) * 8)); /* 1M PHY airtime */
+    ESP_LOGI(TAG, "conn %u: link payload capped at %u octets (rc %d)", conn, oct, rc);
+}
+
+static void log_conn_params(uint16_t conn, const char *what, int status)
+{
+    struct ble_gap_conn_desc d;
+    if (ble_gap_conn_find(conn, &d) != 0) return;
+    ESP_LOGI(TAG, "conn %u %s: interval %u.%02u ms, latency %u, timeout %u ms (status %d)", conn, what,
+             d.conn_itvl * 5 / 4, (d.conn_itvl * 125) % 100, d.conn_latency, d.supervision_timeout * 10, status);
+}
+
+void edge_ble_set_tx_octets(uint16_t octets)
+{
+    s_tx_octets_cap = octets;
+    uint16_t handles[MAX_CONN];
+    int n = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < MAX_CONN; i++) {
+        if (s_conn[i].used) handles[n++] = s_conn[i].handle;
+    }
+    xSemaphoreGive(s_lock);
+    for (int i = 0; i < n; i++) {
+        if (octets) apply_data_len(handles[i]);
+        else ble_gap_set_data_len(handles[i], 251, 2120);
+    }
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
@@ -482,6 +525,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 ble_gap_terminate(event->connect.conn_handle, BLE_ERR_CONN_LIMIT);
             } else {
                 ESP_LOGI(TAG, "connected (%d)", event->connect.conn_handle);
+                log_conn_params(event->connect.conn_handle, "opened", 0);
+                apply_data_len(event->connect.conn_handle);
                 /* Bonded phones re-encrypt right away. A new phone starts pairing itself: if the Edge
                  * asked first, Android would ask its owner for consent before pairing, and the
                  * passkey would time out waiting behind a notification. */
@@ -503,9 +548,25 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         edge_stream_link_down(event->disconnect.conn.conn_handle); /* unconfirmed records go to flash */
         s_passkey_active = false;
         ESP_LOGI(TAG, "disconnected (reason 0x%x)", event->disconnect.reason);
+        s_fast_until = edge_uptime_ms() + FAST_ADV_MS;
         advertise();
         return 0;
     }
+
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        log_conn_params(event->conn_update.conn_handle, "updated", event->conn_update.status);
+        return 0;
+
+    case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+        ESP_LOGI(TAG, "conn %u phy: tx %u rx %u (status %d)", event->phy_updated.conn_handle,
+                 event->phy_updated.tx_phy, event->phy_updated.rx_phy, event->phy_updated.status);
+        return 0;
+
+    case BLE_GAP_EVENT_DATA_LEN_CHG:
+        ESP_LOGI(TAG, "conn %u data length: tx %u octets / %u us, rx %u octets / %u us",
+                 event->data_len_chg.conn_handle, event->data_len_chg.max_tx_octets, event->data_len_chg.max_tx_time,
+                 event->data_len_chg.max_rx_octets, event->data_len_chg.max_rx_time);
+        return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         advertise();
@@ -597,6 +658,7 @@ static void on_sync(void)
         return;
     }
     s_synced = true;
+    s_fast_until = edge_uptime_ms() + FAST_ADV_MS;
     if (bond_count() == 0) s_pair_until = FOREVER; /* first use: open until a phone pairs */
     advertise();
     scan_apply();

@@ -37,6 +37,8 @@ void edge_ble_scan_stop(void);
 /** Notifies a JSON line on the events characteristic (conn < 0: every secured subscriber). */
 void edge_ble_send_line(int conn, const char *line, size_t len);
 bool edge_ble_has_subscriber(void);
+/** Diagnostic (USB console): cap the link-layer payload the Edge sends; 0 restores the default. */
+void edge_ble_set_tx_octets(uint16_t octets);
 
 /**
  * Streams records with seq >= from (at most `limit`) on the records

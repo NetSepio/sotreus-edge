@@ -292,6 +292,8 @@ def handle_cmd(req, args):
         return {**ok, "nodes": STATE["nodes"]}
     if c == "mesh_messages":
         return {**ok, "messages": STATE["messages"]}
+    if c == "sync_confirm":
+        return {**ok, "deleted_through": int(req.get("seq", 0))}
     if c == "mesh_tak":
         return {**ok, "tak": STATE["tak"]}
     if c in ("mesh_tak_chat", "mesh_tak_position") and mesh_on:

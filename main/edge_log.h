@@ -49,6 +49,8 @@ typedef struct {
     uint32_t written;     /* written since boot */
     uint32_t failed;      /* failed writes since boot */
     bool erasing;
+    uint32_t released;    /* records deleted after a confirmed sync since boot */
+    bool releasing;
 } edge_log_stats_t;
 
 esp_err_t edge_log_init(void);
@@ -73,11 +75,19 @@ void edge_log_route_lock(void);
 void edge_log_route_unlock(void);
 /** Writes a record that already has its seq (call with the route lock held). */
 esp_err_t edge_log_write_assigned(edge_rec_t *rec);
+/** The seq the next record will get; stable only while the caller holds the route lock. */
+uint32_t edge_log_next_seq(void);
 
 /** Reads up to `max` records with seq >= from_seq, oldest first. Returns count. */
 int edge_log_read_from(uint32_t from_seq, edge_rec_t *out, int max);
 
 void edge_log_stats(edge_log_stats_t *out);
+
+/**
+ * The phone has safely stored every record up to `through`: they are no longer served and their
+ * flash is erased in the background. `applied` gets the seq actually used (at most the newest).
+ */
+esp_err_t edge_log_release(uint32_t through, uint32_t *applied);
 
 /** Erases every record. With wait=false the erase runs in the background. */
 esp_err_t edge_log_erase(bool wait);

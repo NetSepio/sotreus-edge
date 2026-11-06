@@ -16,8 +16,13 @@
 #include "esp_err.h"
 
 void edge_stream_init(void);
-/** Starts the hand-off on a secured Bluetooth link subscribed to records. */
-esp_err_t edge_stream_start(int conn);
+/**
+ * Starts the hand-off on a secured Bluetooth link subscribed to records. Every record numbered
+ * below `first_seq` is in flash (up to `stored_head`) or was confirmed by a phone earlier; from
+ * `first_seq` on, records go to the phone one after another. Called while a hand-off runs, it
+ * restarts it: unconfirmed records go to flash first and a new `first_seq` is returned.
+ */
+esp_err_t edge_stream_start(int conn, uint32_t *first_seq, uint32_t *stored_head);
 /** Stops it; unconfirmed records are written to flash. */
 void edge_stream_stop(void);
 /** The phone has every record up to and including seq. */

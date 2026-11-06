@@ -534,6 +534,18 @@ esp_err_t edge_seq_floor_set(uint32_t floor)
     return save_u32("seqfloor", floor);
 }
 
+uint32_t edge_log_cut_get(void)
+{
+    uint32_t v = 0;
+    load_u32("logcut", &v);
+    return v;
+}
+
+esp_err_t edge_log_cut_set(uint32_t cut)
+{
+    return save_u32("logcut", cut);
+}
+
 esp_err_t edge_config_factory_reset(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);

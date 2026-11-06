@@ -711,7 +711,7 @@ function renderStatus(s) {
   ]);
   const g = s.log;
   const sm = s.stream || {};
-  kv("#logKv", [["Stored", g.count + " of " + g.capacity], ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"], ["State", g.erasing ? "erasing" : "ready"],
+  kv("#logKv", [["Stored", g.count + " of " + g.capacity + (g.deleted_after_sync ? " (" + g.deleted_after_sync + " deleted after the phone synced them)" : "")], ["Oldest / newest", g.count ? g.oldest + " / " + g.head : "-"], ["State", g.erasing ? "erasing" : "ready"],
     ["Phone hand-off", sm.active ? "on: new records go to the phone (" + sm.delivered + " confirmed, " + sm.unconfirmed + " waiting)" : "off: new records are stored here" + (sm.written_to_flash ? " (" + sm.written_to_flash + " stored after hand-offs ended)" : "")]]);
   const banner = $("#meshBanner");
   if (!m.radio_present) { banner.textContent = "The LoRa radio did not respond."; banner.classList.remove("hidden"); }

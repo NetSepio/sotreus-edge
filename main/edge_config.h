@@ -172,6 +172,9 @@ esp_err_t edge_wifi_net_add(const char *ssid, const char *password);
 esp_err_t edge_wifi_net_remove(const char *ssid);
 
 uint32_t edge_seq_floor_get(void);
+/** Records with seq at or below this were confirmed by the phone and deleted (0 = none). */
+uint32_t edge_log_cut_get(void);
+esp_err_t edge_log_cut_set(uint32_t cut);
 esp_err_t edge_seq_floor_set(uint32_t floor);
 
 #define EDGE_CTX_MAX 2048

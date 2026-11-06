@@ -28,6 +28,10 @@ record types) keep the version. Breaking changes bump it.
   (`Sotreus Edge XXXX`, with the random suffix shown on the display) is
   advertised only while pairing is open. It uses a resolvable private address
   that rotates, so bonded phones should reconnect by bond, not by address.
+  It advertises every 100-150 ms while pairing is open and for 30 s after
+  boot or after a link drops, otherwise about once a second. A phone that
+  reconnects with a direct (not background) connect inside that window is
+  back within seconds.
 * **Framing.** `control` and `events` carry a byte stream of UTF-8 JSON
   objects, each ending in `\n`. Chunks follow the ATT MTU. Concatenate the
   chunks and split on `\n`. Request MTU 517; the Edge prefers 512.
@@ -57,7 +61,10 @@ example `sotreus-96ff.local`). It advertises `_http._tcp` and
 
 115200 baud, one JSON command per line. Responses are printed as
 `@edge <json>`, mixed in with the firmware log. The serial console also
-takes `diag`, which returns heap and per-task stack headroom.
+takes `diag`, which returns heap and per-task stack headroom. For link
+tests, `{"cmd":"diag","ble_tx_octets":27}` caps the link-layer payload the
+Edge sends (27-251; 0 restores the default) until the next restart; the
+console then logs connection parameter, PHY and data-length changes.
 
 ### HTTP and WebSocket
 
@@ -105,7 +112,8 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `access` | | `pin`, `ap_ssid`, `ap_password` |
 | `new_pin` | | `pin`; ends every HTTP session |
 | `sync` | `from`, optional `limit` | BLE only. Response has `oldest`, `head`; then records stream on `records`, then a `sync_done` event |
-| `stream_start` | | Bluetooth only, after subscribing to the records characteristic. From now on every new record is sent on the records characteristic (raw 256 bytes, as in `sync`) instead of being stored. Result: `stored_head`, the newest stored seq, so the app can `sync` what was stored before. See "Phone hand-off" below. |
+| `sync_confirm` | `seq` | the phone has safely stored every record up to and including `seq` (after its database commit). They are no longer served and their flash is erased in the background (about 1 s per 1,000 records). Result: `deleted_through` (capped at the newest stored seq). `status.log.deleted_after_sync` / `deleting` report progress. |
+| `stream_start` | | Bluetooth only, after subscribing to the records characteristic. From now on every new record is sent on the records characteristic (raw 256 bytes, as in `sync`) instead of being stored. Result: `stored_head`, the newest stored seq, so the app can `sync` what was stored before, and `first_seq`, the seq of the first handed-off record. Sent while a hand-off runs, it restarts it (unconfirmed records are stored first). See "Phone hand-off" below. |
 | `stream_ack` | `seq` | the app has every record up to and including `seq` |
 | `stream_stop` | | ends the hand-off; records not yet confirmed are stored |
 | `records` | `from`, `limit ≤ 20` | `records` (JSON views), `next` |
@@ -189,6 +197,15 @@ it, they are milliseconds since boot number `boot`, because the Edge had no
 wall time yet. Keep these records labelled "time not known" unless the app
 can anchor that boot itself, and never present them as fresh.
 
+**Delete after sync.** The record log is a buffer, not an archive: after a
+sync the app sends `sync_confirm` with the newest seq it has committed, and
+the Edge erases those records. Sectors (16 records) whose records are all
+confirmed are erased; when that includes the sector being written, new
+records start in the next sector. The confirmed seq is kept in NVS, so
+confirmed records are never served again, even if a restart interrupts the
+erase. `status.log.count` counts records actually stored (sequence numbers
+have gaps), so use it instead of `head - oldest + 1`.
+
 **Phone hand-off.** While a bonded phone has sent `stream_start`, new records
 go to it instead of flash. Each still gets the next `seq`, so `(device_id,
 seq)` stays unique and records the phone already has never come back under
@@ -200,6 +217,17 @@ values therefore still only increase, with gaps where records went to the
 phone. A phone should de-duplicate by `seq` (a record confirmed late may also
 be stored). Sequence numbers survive restarts: the Edge keeps a floor in NVS
 1,024 ahead of the last one used.
+
+The `stream_start` result fixes the boundary exactly. Every record numbered
+below `first_seq` is either stored (up to `stored_head`; `sync` it) or was
+confirmed by a phone in an earlier hand-off. Numbers between `stored_head`
+and `first_seq` are usually gaps, not missing records: they went to a phone
+earlier, or were skipped at a restart. From `first_seq` on, handed-off
+records arrive one after another (`first_seq`, `first_seq + 1`, ...). A missing
+number means the RAM buffer was full and that record went to flash: stop
+the hand-off, `sync`, and start again. Do not expect `stored_head + 1` as the
+first live record. Sending `stream_start` while a hand-off runs restarts it
+with a new `first_seq`, after writing the unconfirmed records to flash.
 
 **Full tables.** The Edge keeps open sightings in RAM tables (128 Bluetooth,
 48 access points, 48 probing devices). When a table is full a newcomer still

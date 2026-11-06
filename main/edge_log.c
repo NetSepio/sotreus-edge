@@ -33,6 +33,9 @@ static uint32_t s_written, s_failed;
 static SemaphoreHandle_t s_route;   /* orders sequence numbers with where each record goes */
 static uint32_t s_floor_saved;      /* sequence numbers below this are safe from reuse after a restart */
 static edge_log_hook_t s_hook;
+static uint32_t s_cut;              /* confirmed by the phone and deleted: seq <= s_cut is never served */
+static volatile bool s_releasing;
+static uint32_t s_released;         /* records erased after confirmation since boot */
 #define FLOOR_STEP 1024
 
 static uint32_t rec_crc(const edge_rec_t *r)
@@ -63,6 +66,11 @@ static bool slot_blank(uint32_t slot)
         if (words[i] != 0xffffffffu) return false;
     }
     return true;
+}
+
+static uint32_t edge_cut_load(void)
+{
+    return edge_log_cut_get();
 }
 
 static uint32_t oldest_locked(void)
@@ -121,6 +129,7 @@ esp_err_t edge_log_init(void)
     s_next_seq = s_head_seq + 1;
     if (s_next_seq < floor) s_next_seq = floor;
     s_floor_saved = floor;
+    s_cut = edge_cut_load();
     if (s_next_seq == 0) s_next_seq = 1;
 
     ESP_LOGI(TAG, "%lu slots, head seq %lu, oldest %lu, next %lu", (unsigned long)s_cap,
@@ -227,11 +236,20 @@ esp_err_t edge_log_write_assigned(edge_rec_t *rec)
     return write_slot(rec);
 }
 
+uint32_t edge_log_next_seq(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    uint32_t n = s_next_seq;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
 int edge_log_read_from(uint32_t from_seq, edge_rec_t *out, int max)
 {
     if (!s_part || max <= 0 || s_erasing) return 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     int n = 0;
+    if (from_seq <= s_cut) from_seq = s_cut + 1;
     if (s_head_seq == 0 || from_seq > s_head_seq) goto done;
     uint32_t oldest = oldest_locked();
     if (from_seq < oldest) from_seq = oldest;
@@ -276,13 +294,87 @@ void edge_log_stats(edge_log_stats_t *out)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     out->head_seq = s_head_seq;
     out->oldest_seq = s_head_seq ? oldest_locked() : 0;
-    out->count = s_head_seq && out->oldest_seq ? s_head_seq - out->oldest_seq + 1 : 0;
+    if (out->oldest_seq && out->oldest_seq <= s_cut) out->oldest_seq = s_cut + 1;
+    if (out->oldest_seq > s_head_seq) out->oldest_seq = 0;
+    /* Count by sector: sequence numbers have gaps (records handed to the phone, the restart floor). */
+    uint32_t head_sect = s_head_slot >= 0 ? (uint32_t)s_head_slot / PER_SECT : UINT32_MAX;
+    out->count = 0;
+    for (uint32_t s = 0; out->oldest_seq && s < s_nsect; s++) {
+        if (!s_first[s]) continue;
+        out->count += s == head_sect ? (uint32_t)s_head_slot % PER_SECT + 1 : PER_SECT;
+    }
+    out->released = s_released;
+    out->releasing = s_releasing;
     if (out->count > s_cap) out->count = s_cap;
     out->capacity = s_cap;
     out->written = s_written;
     out->failed = s_failed;
     out->erasing = s_erasing;
     xSemaphoreGive(s_lock);
+}
+
+/* ---- Delete after a confirmed sync ------------------------------------------------- */
+
+/* Highest seq stored in a sector (record headers only), 0 if none. */
+static uint32_t sector_max_seq(uint32_t sect)
+{
+    uint32_t mx = 0;
+    for (uint32_t k = 0; k < PER_SECT; k++) {
+        uint32_t seq;
+        if (esp_partition_read(s_part, ((size_t)sect * PER_SECT + k) * EDGE_REC_SIZE, &seq, sizeof(seq)) != ESP_OK) continue;
+        if (seq != 0xffffffffu && seq <= s_head_seq && seq > mx) mx = seq;
+    }
+    return mx;
+}
+
+/* Erases every sector whose records all have seq <= through. When that includes the sector being
+ * written, writing moves on to the next sector so every sector still starts with a record. */
+static void do_release(uint32_t through)
+{
+    for (uint32_t s = 0; s < s_nsect; s++) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        uint32_t head_sect = s_head_slot >= 0 ? (uint32_t)s_head_slot / PER_SECT : UINT32_MAX;
+        uint32_t f = s_first[s];
+        bool erase = f && f <= through && sector_max_seq(s) <= through;
+        if (erase) {
+            uint32_t n = s == head_sect ? (uint32_t)s_head_slot % PER_SECT + 1 : PER_SECT;
+            if (esp_partition_erase_range(s_part, (size_t)s * SECT_SIZE, SECT_SIZE) == ESP_OK) {
+                s_first[s] = 0;
+                s_released += n;
+                if (s == head_sect) s_head_slot = (int32_t)(s * PER_SECT + PER_SECT - 1); /* next write: next sector */
+            }
+        }
+        xSemaphoreGive(s_lock);
+        if (erase) vTaskDelay(1);
+    }
+    s_releasing = false;
+    ESP_LOGI(TAG, "released records up to seq %lu (%lu erased since boot)", (unsigned long)through, (unsigned long)s_released);
+}
+
+static void release_task(void *arg)
+{
+    do_release((uint32_t)(uintptr_t)arg);
+    vTaskDelete(NULL);
+}
+
+esp_err_t edge_log_release(uint32_t through, uint32_t *applied)
+{
+    if (!s_part) return ESP_ERR_INVALID_STATE;
+    if (s_erasing || s_releasing) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (through > s_head_seq) through = s_head_seq;
+    bool more = through > s_cut;
+    if (more) s_cut = through;
+    xSemaphoreGive(s_lock);
+    if (applied) *applied = through;
+    if (!more) return ESP_OK;
+    edge_log_cut_set(through); /* served no more, even before the erase finishes */
+    s_releasing = true;
+    if (xTaskCreate(release_task, "log_release", 3072, (void *)(uintptr_t)through, 3, NULL) != pdPASS) {
+        s_releasing = false;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 static void do_erase(void)

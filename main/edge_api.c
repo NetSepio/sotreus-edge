@@ -307,6 +307,8 @@ cJSON *edge_api_status_json(void)
     cJSON_AddNumberToObject(lj, "capacity", ls.capacity);
     cJSON_AddBoolToObject(lj, "erasing", ls.erasing);
     cJSON_AddNumberToObject(lj, "write_failures", ls.failed);
+    cJSON_AddNumberToObject(lj, "deleted_after_sync", ls.released);
+    cJSON_AddBoolToObject(lj, "deleting", ls.releasing);
 
     cJSON_AddItemToObject(o, "stream", edge_stream_status_json());
     cJSON_AddItemToObject(o, "mesh", mesh_status_json());
@@ -1097,6 +1099,9 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         if (e != ESP_OK) return err_resp("could not save");
         r = ok_resp();
     } else if (strcmp(cmd, "diag") == 0) {
+        if (origin == EDGE_SINK_UART && jnum(req, "ble_tx_octets", &n) && (n == 0 || (n >= 27 && n <= 251))) {
+            edge_ble_set_tx_octets((uint16_t)n);
+        }
         r = ok_resp();
         cJSON *h = cJSON_AddObjectToObject(r, "heap");
         cJSON_AddNumberToObject(h, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -1171,16 +1176,25 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         edge_identity_new_pin();
         r = ok_resp();
         cJSON_AddStringToObject(r, "pin", edge_identity()->access_pin);
+    } else if (strcmp(cmd, "sync_confirm") == 0) {
+        /* The phone has stored every record up to seq: delete them here. */
+        if (!jnum(req, "seq", &n) || n < 1) return err_resp("missing seq: the newest record the phone has stored");
+        uint32_t applied = 0;
+        esp_err_t e = edge_log_release((uint32_t)n, &applied);
+        if (e == ESP_ERR_INVALID_STATE) return err_resp("the record log is busy erasing; try again shortly");
+        if (e != ESP_OK) return err_resp("no memory");
+        r = ok_resp();
+        cJSON_AddNumberToObject(r, "deleted_through", applied);
     } else if (strcmp(cmd, "stream_start") == 0) {
         if (origin != EDGE_SINK_BLE) return err_resp("the hand-off runs over Bluetooth only");
-        esp_err_t e = edge_stream_start(target);
+        uint32_t first = 0, stored = 0;
+        esp_err_t e = edge_stream_start(target, &first, &stored);
         if (e == ESP_ERR_INVALID_STATE) return err_resp("subscribe to the records characteristic first");
         if (e == ESP_ERR_NOT_SUPPORTED) return err_resp("another phone already receives the hand-off");
         if (e != ESP_OK) return err_resp("no memory");
-        edge_log_stats_t ls;
-        edge_log_stats(&ls);
         r = ok_resp();
-        cJSON_AddNumberToObject(r, "stored_head", ls.head_seq); /* sync up to here for what was stored before */
+        cJSON_AddNumberToObject(r, "stored_head", stored); /* sync up to here for what was stored before */
+        cJSON_AddNumberToObject(r, "first_seq", first);    /* the first handed-off record; then one after another */
     } else if (strcmp(cmd, "stream_ack") == 0) {
         if (!jnum(req, "seq", &n) || n < 1) return err_resp("missing seq");
         edge_stream_ack((uint32_t)n);
