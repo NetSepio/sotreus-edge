@@ -1,5 +1,7 @@
 #include "edge_util.h"
 
+#include <stdio.h>
+
 #include <string.h>
 
 static const char HEX[] = "0123456789abcdef";
@@ -113,6 +115,23 @@ int edge_b64_encode(const uint8_t *in, size_t n, char *out, size_t out_max)
     }
     out[o] = '\0';
     return (int)o;
+}
+
+size_t edge_trim_zeros(const uint8_t *body, size_t n)
+{
+    while (n > 0 && body[n - 1] == 0) n--;
+    return n;
+}
+
+int edge_live_row(char *out, size_t cap, const char *kind, const uint8_t addr[6], int rssi_last, int rssi_max,
+                  int64_t ago_ms, uint32_t count)
+{
+    char m[18];
+    edge_mac_str(addr, m);
+    if (ago_ms < 0) ago_ms = 0;
+    int n = snprintf(out, cap, "[\"%s\",\"%s\",%d,%d,%lld,%lu]", kind, m, rssi_last, rssi_max, (long long)ago_ms,
+                     (unsigned long)count);
+    return n < 0 || (size_t)n >= cap ? -1 : n;
 }
 
 uint32_t edge_fnv1a(const uint8_t *salt, size_t salt_len, const uint8_t *data, size_t n)

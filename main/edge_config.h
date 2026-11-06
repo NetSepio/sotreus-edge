@@ -183,6 +183,37 @@ esp_err_t edge_ctx_set(const char *json);
 bool edge_tz_get(int32_t *minutes);
 esp_err_t edge_tz_set(int32_t minutes);
 
+/* ---- Placement (protocol: config.placement) --------------------------------------------
+ * How the owner uses this Edge, and where it is when it stays in one place. Stored only: the
+ * Edge does not use it, show it, or send it over the mesh. The phone app tags sightings with it. */
+#define EDGE_PLACE_VERSION 1
+
+typedef enum {
+    EDGE_PLACE_TRAVEL = 0,     /* carried; the phone tags sightings while they are together */
+    EDGE_PLACE_STATIONARY = 1, /* left in one place; sightings use the position below */
+} edge_place_mode_t;
+
+typedef enum {
+    EDGE_PLACE_SRC_NONE = 0,
+    EDGE_PLACE_SRC_PHONE = 1,  /* averaged phone fixes taken next to the Edge */
+    EDGE_PLACE_SRC_MAP = 2,    /* picked on a map by the owner */
+    EDGE_PLACE_SRC_GNSS = 3,   /* the Edge's own receiver (boards with GNSS) */
+} edge_place_source_t;
+
+typedef struct {
+    uint16_t version;
+    uint8_t mode;              /* edge_place_mode_t */
+    uint8_t source;            /* edge_place_source_t */
+    bool positioned;
+    int32_t lat_e7;
+    int32_t lon_e7;
+    uint32_t accuracy_dm;      /* 0.1 m */
+    int64_t set_unix_ms;
+} edge_placement_t;
+
+void edge_placement_get(edge_placement_t *out);
+esp_err_t edge_placement_set(const edge_placement_t *in);
+
 /** Mesh public/private key pair (Curve25519), created on first use. */
 esp_err_t edge_pki_get(uint8_t priv[32], uint8_t pub[32]);
 esp_err_t edge_pki_regenerate(void);

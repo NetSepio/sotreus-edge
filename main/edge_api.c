@@ -226,6 +226,8 @@ cJSON *edge_api_info_json(void)
     cJSON_AddTrueToObject(caps, "display");
     cJSON_AddTrueToObject(caps, "battery");
     cJSON_AddTrueToObject(caps, "ota_upload");
+    cJSON_AddTrueToObject(caps, "live_sightings"); /* `live` command and seen.body */
+    cJSON_AddTrueToObject(caps, "placement");      /* config.placement */
     return o;
 }
 
@@ -513,11 +515,75 @@ static const char *apply_mod_json(const cJSON *m, edge_mesh_mod_t *d)
     return NULL;
 }
 
+static int32_t deg_e7(double d)
+{
+    return (int32_t)(d * 1e7 + (d >= 0 ? 0.5 : -0.5));
+}
+
+static cJSON *placement_json(void)
+{
+    static const char *SRC[] = {"none", "phone", "map", "gnss"};
+    edge_placement_t p;
+    edge_placement_get(&p);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "mode", p.mode == EDGE_PLACE_STATIONARY ? "stationary" : "travel");
+    if (p.positioned) {
+        cJSON_AddNumberToObject(o, "lat", p.lat_e7 / 1e7);
+        cJSON_AddNumberToObject(o, "lon", p.lon_e7 / 1e7);
+        cJSON_AddNumberToObject(o, "accuracy_m", p.accuracy_dm / 10.0);
+        if (p.set_unix_ms > 0) cJSON_AddNumberToObject(o, "set_unix_ms", (double)p.set_unix_ms);
+        cJSON_AddStringToObject(o, "source", SRC[p.source <= EDGE_PLACE_SRC_GNSS ? p.source : 0]);
+    }
+    return o;
+}
+
+/* config.placement: {mode, lat, lon, accuracy_m, set_unix_ms, source}; "lat": null clears the position. */
+static const char *apply_placement_json(const cJSON *pj, edge_placement_t *p)
+{
+    const char *mode = jstr(pj, "mode");
+    if (mode) {
+        if (strcmp(mode, "travel") == 0) {
+            p->mode = EDGE_PLACE_TRAVEL;
+        } else if (strcmp(mode, "stationary") == 0) {
+            p->mode = EDGE_PLACE_STATIONARY;
+        } else {
+            return "placement.mode must be travel or stationary";
+        }
+    }
+    if (cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(pj, "lat"))) {
+        p->positioned = false;
+        p->lat_e7 = p->lon_e7 = 0;
+        p->accuracy_dm = 0;
+        p->source = EDGE_PLACE_SRC_NONE;
+        p->set_unix_ms = 0;
+        return NULL;
+    }
+    double lat, lon, acc, n;
+    bool has_lat = jnum(pj, "lat", &lat), has_lon = jnum(pj, "lon", &lon);
+    if (has_lat != has_lon) return "placement needs both lat and lon";
+    if (!has_lat) return NULL;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return "placement lat/lon out of range";
+    if (!jnum(pj, "accuracy_m", &acc) || acc <= 0 || acc > 10000) return "placement.accuracy_m must be above 0 and at most 10000";
+    p->lat_e7 = deg_e7(lat);
+    p->lon_e7 = deg_e7(lon);
+    p->accuracy_dm = (uint32_t)(acc * 10 + 0.5);
+    p->positioned = true;
+    const char *src = jstr(pj, "source");
+    p->source = src && strcmp(src, "map") == 0    ? EDGE_PLACE_SRC_MAP
+                : src && strcmp(src, "gnss") == 0 ? EDGE_PLACE_SRC_GNSS
+                                                  : EDGE_PLACE_SRC_PHONE;
+    p->set_unix_ms = jnum(pj, "set_unix_ms", &n) && n > 0 ? (int64_t)n
+                     : edge_time_valid()                 ? edge_time_to_unix_ms(edge_uptime_ms())
+                                                         : 0;
+    return NULL;
+}
+
 static cJSON *config_json(const edge_config_t *c)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "mode", mode_name(c->mode));
     cJSON_AddStringToObject(o, "link", link_name(c->link_mode));
+    cJSON_AddItemToObject(o, "placement", placement_json());
     cJSON *a = cJSON_AddObjectToObject(o, "awareness");
     cJSON_AddBoolToObject(a, "ble", c->ble_scan);
     cJSON_AddBoolToObject(a, "ble_active", c->ble_active);
@@ -949,6 +1015,21 @@ static __attribute__((noinline)) cJSON *cmd_set_config(const cJSON *cfgj)
         if (mod_changed) edge_mod_set(&md[1]);
         free(md);
     }
+    const cJSON *placej = cJSON_GetObjectItemCaseSensitive(cfgj, "placement");
+    if (cJSON_IsObject(placej)) {
+        edge_placement_t cur, next;
+        edge_placement_get(&cur);
+        next = cur;
+        e = apply_placement_json(placej, &next);
+        if (e) {
+            free(old);
+            return err_resp(e);
+        }
+        if (memcmp(&cur, &next, sizeof(cur)) != 0 && edge_placement_set(&next) != ESP_OK) {
+            free(old);
+            return err_resp("could not save placement");
+        }
+    }
     if (edge_config_set(c) != ESP_OK) {
         free(old);
         return err_resp("could not save settings");
@@ -1133,6 +1214,22 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
     } else if (strcmp(cmd, "unwatch") == 0) {
         sense_unwatch();
         r = ok_resp();
+    } else if (strcmp(cmd, "live") == 0) {
+        int offset = jnum(req, "offset", &n) ? (int)n : 0;
+        int limit = jnum(req, "limit", &n) ? (int)n : SENSE_LIVE_MAX;
+        int total = 0, next = -1;
+        char *rows = sense_live_json(offset, limit, &total, &next);
+        if (!rows) return err_resp(sense_running() ? "no memory" : "not listening (Mesh mode or stopped)");
+        r = ok_resp();
+        cJSON_AddRawToObject(r, "rows", rows);
+        free(rows);
+        cJSON_AddNumberToObject(r, "total", total);
+        if (next >= 0) {
+            cJSON_AddNumberToObject(r, "next", next);
+        } else {
+            cJSON_AddNullToObject(r, "next");
+        }
+        cJSON_AddNumberToObject(r, "uptime_ms", (double)edge_uptime_ms());
     } else if (strcmp(cmd, "mesh_send") == 0) {
         uint32_t to;
         if (!parse_node(cJSON_GetObjectItemCaseSensitive(req, "to"), &to)) return err_resp("bad destination");

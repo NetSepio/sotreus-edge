@@ -71,6 +71,16 @@ void sense_feed_probe(const sense_probe_report_t *r);
 
 void sense_get_stats(sense_stats_t *out);
 
+/** Rows per `live` page (keeps the response small for the heap and for Bluetooth). */
+#define SENSE_LIVE_MAX 100
+
+/**
+ * The open sightings as a JSON array of `live` rows, strongest last RSSI first, from `offset`
+ * (at most `limit`, capped at SENSE_LIVE_MAX). `ago_ms` is measured on the Edge. Caller frees.
+ * NULL when awareness is not running or memory is short. `next` is -1 on the last page.
+ */
+char *sense_live_json(int offset, int limit, int *total, int *next);
+
 /** Streams every report for one device as "rssi" events for `seconds` (max 600). */
 esp_err_t sense_watch(sense_watch_kind_t kind, const uint8_t addr[6], uint16_t seconds);
 void sense_unwatch(void);

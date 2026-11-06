@@ -172,12 +172,17 @@ static void write_record(uint8_t type, const win_t *w, const void *body, size_t 
     }
 }
 
-static void flush_ble(ble_ent_t *e, uint8_t flags)
+static void build_ble(ble_ent_t *e)
 {
     e->b.rssi_last = e->w.rssi_last;
     e->b.rssi_max = e->w.rssi_max;
     e->b.rssi_min = e->w.rssi_min;
     e->b.count = e->w.count;
+}
+
+static void flush_ble(ble_ent_t *e, uint8_t flags)
+{
+    build_ble(e);
     write_record(EDGE_REC_BLE, &e->w, &e->b, sizeof(e->b), flags);
 }
 
@@ -189,7 +194,8 @@ static rid_ent_t *rid_find(const uint8_t bssid[6])
     return NULL;
 }
 
-static void flush_ap(ap_ent_t *e, uint8_t flags)
+/* The record body as it would be written now (Remote ID element included). */
+static void build_ap(const ap_ent_t *e, edge_body_wifi_ap_t *out)
 {
     edge_body_wifi_ap_t b;
     memset(&b, 0, sizeof(b));
@@ -209,12 +215,20 @@ static void flush_ap(ap_ent_t *e, uint8_t flags)
         b.flags |= EDGE_APF_REMOTE_ID;
         b.rid_len = r->len;
         memcpy(b.rid, r->rid, r->len);
-        if (!(flags & EDGE_RECF_CONTINUES)) r->used = false; /* sighting closed */
     }
+    *out = b;
+}
+
+static void flush_ap(ap_ent_t *e, uint8_t flags)
+{
+    edge_body_wifi_ap_t b;
+    build_ap(e, &b);
+    rid_ent_t *r = rid_find(e->b.bssid);
+    if (r && !(flags & EDGE_RECF_CONTINUES)) r->used = false; /* sighting closed */
     write_record(EDGE_REC_WIFI_AP, &e->w, &b, sizeof(b), flags);
 }
 
-static void flush_probe(probe_ent_t *e, uint8_t flags)
+static void build_probe(const probe_ent_t *e, edge_body_wifi_probe_t *out)
 {
     edge_body_wifi_probe_t b;
     memset(&b, 0, sizeof(b));
@@ -228,6 +242,13 @@ static void flush_probe(probe_ent_t *e, uint8_t flags)
     b.rssi_min = e->w.rssi_min;
     b.count = e->w.count;
     if (s_plain && (e->b.flags & EDGE_PRBF_PLAIN)) memcpy(b.plain, s_plain[e - s_probe], sizeof(b.plain));
+    *out = b;
+}
+
+static void flush_probe(probe_ent_t *e, uint8_t flags)
+{
+    edge_body_wifi_probe_t b;
+    build_probe(e, &b);
     write_record(EDGE_REC_WIFI_PROBE, &e->w, &b, sizeof(b), flags);
 }
 
@@ -243,7 +264,10 @@ static void flush_probe(probe_ent_t *e, uint8_t flags)
         _free;                                                                                     \
     })
 
-static void publish_seen(const char *kind, const uint8_t addr[6], int8_t rssi, const char *label)
+/* `body`: the record body this window would be written with now, sent base64 with trailing zeros
+ * trimmed, so the phone can classify a device the moment it is first heard (protocol: seen.body). */
+static void publish_seen(const char *kind, const uint8_t addr[6], int8_t rssi, const char *label, const void *body,
+                         size_t body_len)
 {
     if (!edge_events_has_listeners()) return;
     cJSON *ev = cJSON_CreateObject();
@@ -255,6 +279,11 @@ static void publish_seen(const char *kind, const uint8_t addr[6], int8_t rssi, c
     cJSON_AddNumberToObject(ev, "rssi", rssi);
     if (label && label[0]) cJSON_AddStringToObject(ev, "label", label);
     cJSON_AddNumberToObject(ev, "uptime_ms", (double)edge_uptime_ms());
+    size_t n = body ? edge_trim_zeros(body, body_len) : 0;
+    if (n) {
+        char b64[((EDGE_REC_BODY_MAX + 2) / 3) * 4 + 1];
+        if (edge_b64_encode(body, n, b64, sizeof(b64)) > 0) cJSON_AddStringToObject(ev, "body", b64);
+    }
     edge_events_publish(ev);
     cJSON_Delete(ev);
 }
@@ -324,7 +353,10 @@ static void on_ble(const sense_ble_report_t *r, int64_t t)
             e->b.flags &= (uint8_t)~EDGE_BLEF_CONNECTABLE;
         }
     }
-    if (is_new) publish_seen("ble", r->addr, r->rssi, NULL);
+    if (is_new && edge_events_has_listeners()) {
+        build_ble(e);
+        publish_seen("ble", r->addr, r->rssi, NULL, &e->b, sizeof(e->b));
+    }
 }
 
 static void on_ap(const sense_ap_report_t *r, int64_t t)
@@ -382,7 +414,9 @@ static void on_ap(const sense_ap_report_t *r, int64_t t)
     if (is_new) {
         char label[33 * 2] = "";
         if (r->ssid_len) edge_sanitize_text(label, sizeof(label), r->ssid, r->ssid_len);
-        publish_seen("wifi_ap", r->bssid, r->rssi, label);
+        edge_body_wifi_ap_t b;
+        build_ap(e, &b);
+        publish_seen("wifi_ap", r->bssid, r->rssi, label, &b, sizeof(b));
     }
 }
 
@@ -432,7 +466,11 @@ static void on_probe(const sense_probe_report_t *r, int64_t t)
             }
         }
     }
-    if (is_new) publish_seen("wifi_probe", r->mac, r->rssi, NULL);
+    if (is_new && edge_events_has_listeners()) {
+        edge_body_wifi_probe_t b;
+        build_probe(e, &b);
+        publish_seen("wifi_probe", r->mac, r->rssi, NULL, &b, sizeof(b));
+    }
 }
 
 /* ---- Window maintenance ----------------------------------------------------- */
@@ -586,7 +624,7 @@ void sense_init(void)
     s_lock = xSemaphoreCreateMutex();
     s_q = xQueueCreate(QUEUE_LEN, sizeof(item_t));
     s_cmd = xQueueCreate(4, sizeof(uint8_t));
-    xTaskCreatePinnedToCore(sense_task, "sense", 4096, NULL, 5, &s_task, 1);
+    xTaskCreatePinnedToCore(sense_task, "sense", 5120, NULL, 5, &s_task, 1); /* seen.body needs ~0.5 KB */
 }
 
 static void send_cmd(uint8_t c)
@@ -613,6 +651,85 @@ void sense_reload(void)
 bool sense_running(void)
 {
     return s_running;
+}
+
+typedef struct {
+    const char *kind;
+    uint8_t addr[6];
+    int8_t rssi_last, rssi_max;
+    int64_t last;
+    uint32_t count;
+} live_row_t;
+
+static int live_cmp(const void *a, const void *b)
+{
+    const live_row_t *x = a, *y = b;
+    if (x->rssi_last != y->rssi_last) return y->rssi_last - x->rssi_last;
+    return (y->last > x->last) - (y->last < x->last);
+}
+
+char *sense_live_json(int offset, int limit, int *total, int *next)
+{
+    *total = 0;
+    *next = -1;
+    if (!s_lock || !s_running) return NULL;
+    if (offset < 0) offset = 0;
+    if (limit < 1 || limit > SENSE_LIVE_MAX) limit = SENSE_LIVE_MAX;
+    live_row_t *rows = malloc(sizeof(live_row_t) * (MAX_BLE + MAX_AP + MAX_PROBE));
+    if (!rows) return NULL;
+    int n = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int64_t now = edge_uptime_ms();
+    for (int i = 0; s_ble && i < MAX_BLE; i++) {
+        if (!s_ble[i].w.used) continue;
+        live_row_t *r = &rows[n++];
+        r->kind = "ble";
+        memcpy(r->addr, s_ble[i].b.addr, 6);
+        r->rssi_last = s_ble[i].w.rssi_last; r->rssi_max = s_ble[i].w.rssi_max;
+        r->last = s_ble[i].w.last; r->count = s_ble[i].w.count;
+    }
+    for (int i = 0; s_ap && i < MAX_AP; i++) {
+        if (!s_ap[i].w.used) continue;
+        live_row_t *r = &rows[n++];
+        r->kind = "wifi_ap";
+        memcpy(r->addr, s_ap[i].b.bssid, 6);
+        r->rssi_last = s_ap[i].w.rssi_last; r->rssi_max = s_ap[i].w.rssi_max;
+        r->last = s_ap[i].w.last; r->count = s_ap[i].w.count;
+    }
+    for (int i = 0; s_probe && i < MAX_PROBE; i++) {
+        if (!s_probe[i].w.used) continue;
+        live_row_t *r = &rows[n++];
+        r->kind = "wifi_probe";
+        memcpy(r->addr, s_probe[i].b.mac, 6);
+        r->rssi_last = s_probe[i].w.rssi_last; r->rssi_max = s_probe[i].w.rssi_max;
+        r->last = s_probe[i].w.last; r->count = s_probe[i].w.count;
+    }
+    xSemaphoreGive(s_lock);
+    qsort(rows, n, sizeof(rows[0]), live_cmp);
+    *total = n;
+    int end = offset + limit < n ? offset + limit : n;
+    if (end < n) *next = end;
+    size_t cap = 3 + (size_t)(end > offset ? end - offset : 0) * 72;
+    char *out = malloc(cap);
+    if (!out) {
+        free(rows);
+        return NULL;
+    }
+    size_t len = 0;
+    out[len++] = '[';
+    for (int i = offset; i < end; i++) {
+        char row[96];
+        int w = edge_live_row(row, sizeof(row), rows[i].kind, rows[i].addr, rows[i].rssi_last, rows[i].rssi_max,
+                              now - rows[i].last, rows[i].count);
+        if (w < 0 || len + (size_t)w + 3 > cap) break;
+        if (i > offset) out[len++] = ',';
+        memcpy(out + len, row, (size_t)w);
+        len += (size_t)w;
+    }
+    out[len++] = ']';
+    out[len] = '\0';
+    free(rows);
+    return out;
 }
 
 void sense_get_stats(sense_stats_t *out)

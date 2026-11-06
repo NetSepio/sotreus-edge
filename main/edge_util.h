@@ -27,6 +27,13 @@ int edge_b64_decode(const char *in, uint8_t *out, size_t out_max);
 /** Standard base64 with padding. Returns length (without NUL) or -1. */
 int edge_b64_encode(const uint8_t *in, size_t n, char *out, size_t out_max);
 
+/** Length of `body` without its trailing zero bytes (receivers pad with zeros). */
+size_t edge_trim_zeros(const uint8_t *body, size_t n);
+
+/** One `live` row: ["kind","AA:BB:..",rssi_last,rssi_max,ago_ms,count]. Returns length or -1 if it does not fit. */
+int edge_live_row(char *out, size_t cap, const char *kind, const uint8_t addr[6], int rssi_last, int rssi_max,
+                  int64_t ago_ms, uint32_t count);
+
 /** FNV-1a 32-bit over salt || data. */
 uint32_t edge_fnv1a(const uint8_t *salt, size_t salt_len, const uint8_t *data, size_t n);
 
