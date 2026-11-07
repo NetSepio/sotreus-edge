@@ -32,6 +32,10 @@ record types) keep the version. Breaking changes bump it.
   boot or after a link drops, otherwise about once a second. A phone that
   reconnects with a direct (not background) connect inside that window is
   back within seconds.
+* **Link-layer packets.** 3 s after a paired phone's link is encrypted, the
+  Edge limits the packets it sends to 27 bytes, once per link. With 251-byte
+  packets an Android 9 phone (Huawei, Bluetooth 4.2) lost every link within
+  two minutes. The limit lowers throughput, so keep polling light.
 * **Framing.** `control` and `events` carry a byte stream of UTF-8 JSON
   objects, each ending in `\n`. Chunks follow the ATT MTU. Concatenate the
   chunks and split on `\n`. Request MTU 517; the Edge prefers 512.
@@ -62,9 +66,10 @@ example `sotreus-96ff.local`). It advertises `_http._tcp` and
 115200 baud, one JSON command per line. Responses are printed as
 `@edge <json>`, mixed in with the firmware log. The serial console also
 takes `diag`, which returns heap and per-task stack headroom. For link
-tests, `{"cmd":"diag","ble_tx_octets":27}` caps the link-layer payload the
-Edge sends (27-251; 0 restores the default) until the next restart; the
-console then logs connection parameter, PHY and data-length changes.
+tests, `{"cmd":"diag","ble_tx_octets":N}` sets the link-layer payload the
+Edge limits new paired links to (27-251; 0 means 251) until the next
+restart. Live links are left alone. The console logs connection parameter,
+PHY and data-length changes.
 
 ### HTTP and WebSocket
 

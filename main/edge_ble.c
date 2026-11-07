@@ -51,6 +51,7 @@ typedef struct {
     bool secured;
     bool sub_events;
     bool sub_records;
+    bool dle_set;      /* the settled payload limit was requested once on this link */
     size_t rx_len;
     char *rx;
 } conn_t;
@@ -70,6 +71,12 @@ static volatile int64_t s_fast_until;
 /* Diagnostic: cap on the link-layer payload the Edge sends (0 = controller default). Set from the
  * USB console only, to tell a phone's trouble with long packets apart from other link faults. */
 static volatile uint16_t s_tx_octets_cap;
+/* Link-layer payload new connections start with. The controller's own default (251) makes the Edge
+ * open a data-length procedure the instant a phone connects; on an Android 9 Huawei that collided
+ * with the phone's own procedures. 27 opens none. */
+#define BOOT_TX_OCTETS 27
+/* Applied this long after a paired phone's link is encrypted, when its own setup is done. */
+#define SETTLED_DLE_MS 3000
 static volatile bool s_passkey_active;
 static volatile uint32_t s_passkey;
 static bool s_adv_pairing_mode;
@@ -472,12 +479,12 @@ static void tick_cb(void *arg)
 
 /* ---- GAP events --------------------------------------------------------------- */
 
-static void apply_data_len(uint16_t conn)
+/* Suggested default for new connections: changes no live link and starts no procedure. */
+static void write_default_data_len(uint16_t octets)
 {
-    uint16_t oct = s_tx_octets_cap;
-    if (!oct) return;
-    int rc = ble_gap_set_data_len(conn, oct, (uint16_t)((oct + 14) * 8)); /* 1M PHY airtime */
-    ESP_LOGI(TAG, "conn %u: link payload capped at %u octets (rc %d)", conn, oct, rc);
+    uint16_t o = octets ? octets : 251;
+    int rc = ble_gap_write_sugg_def_data_len(o, (uint16_t)((o + 14) * 8)); /* 1M PHY airtime */
+    ESP_LOGI(TAG, "new links start with %u-octet link payload (rc %d)", o, rc);
 }
 
 static void log_conn_params(uint16_t conn, const char *what, int status)
@@ -488,20 +495,26 @@ static void log_conn_params(uint16_t conn, const char *what, int status)
              d.conn_itvl * 5 / 4, (d.conn_itvl * 125) % 100, d.conn_latency, d.supervision_timeout * 10, status);
 }
 
+/* Limits a settled link's payload: a separate step, so it never collides with the phone's
+ * connection-parameter or encryption procedures at connect. */
+static void settled_dle_task(void *arg)
+{
+    uint16_t h = (uint16_t)(uintptr_t)arg;
+    vTaskDelay(pdMS_TO_TICKS(SETTLED_DLE_MS));
+    uint16_t o = s_tx_octets_cap;
+    struct ble_gap_conn_desc d;
+    if (o && ble_gap_conn_find(h, &d) == 0) {
+        int rc = ble_gap_set_data_len(h, o, (uint16_t)((o + 14) * 8));
+        ESP_LOGI(TAG, "conn %u settled: link payload limited to %u octets (rc %d)", h, o, rc);
+    }
+    vTaskDelete(NULL);
+}
+
 void edge_ble_set_tx_octets(uint16_t octets)
 {
+    /* New links only: a request on a live link can collide with one still pending. */
     s_tx_octets_cap = octets;
-    uint16_t handles[MAX_CONN];
-    int n = 0;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    for (int i = 0; i < MAX_CONN; i++) {
-        if (s_conn[i].used) handles[n++] = s_conn[i].handle;
-    }
-    xSemaphoreGive(s_lock);
-    for (int i = 0; i < n; i++) {
-        if (octets) apply_data_len(handles[i]);
-        else ble_gap_set_data_len(handles[i], 251, 2120);
-    }
+    write_default_data_len(octets);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -526,7 +539,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             } else {
                 ESP_LOGI(TAG, "connected (%d)", event->connect.conn_handle);
                 log_conn_params(event->connect.conn_handle, "opened", 0);
-                apply_data_len(event->connect.conn_handle);
                 /* Bonded phones re-encrypt right away. A new phone starts pairing itself: if the Edge
                  * asked first, Android would ask its owner for consent before pairing, and the
                  * passkey would time out waiting behind a notification. */
@@ -577,7 +589,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         xSemaphoreTake(s_lock, portMAX_DELAY);
         conn_t *c = conn_find(event->enc_change.conn_handle);
         if (c) c->secured = secured;
+        /* Once per link: a second data-length request while the first is unanswered stalls the
+         * controller's HCI for seconds and NimBLE resets (seen with an Android 9 phone). */
+        bool want_dle = secured && s_tx_octets_cap && c && !c->dle_set;
+        if (want_dle) c->dle_set = true;
         xSemaphoreGive(s_lock);
+        if (want_dle) {
+            xTaskCreate(settled_dle_task, "ble_dle", 2560, (void *)(uintptr_t)event->enc_change.conn_handle, 5, NULL);
+        }
         if (s_passkey_active) {
             s_passkey_active = false;
             if (secured) {
@@ -659,6 +678,8 @@ static void on_sync(void)
     }
     s_synced = true;
     s_fast_until = edge_uptime_ms() + FAST_ADV_MS;
+    s_tx_octets_cap = BOOT_TX_OCTETS;
+    write_default_data_len(s_tx_octets_cap);
     if (bond_count() == 0) s_pair_until = FOREVER; /* first use: open until a phone pairs */
     advertise();
     scan_apply();
