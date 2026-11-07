@@ -93,6 +93,94 @@ static bool peer_bonded(const ble_addr_t *addr)
     return ble_store_read_peer_sec(&key, &value) == 0;
 }
 
+/* The phone's address for the log, shortened the way Android logs it (..:d7:52). */
+static void peer_tag(const struct ble_gap_conn_desc *d, char *out, size_t n)
+{
+    const uint8_t *v = d->peer_id_addr.val;
+    bool via_rpa = memcmp(d->peer_ota_addr.val, v, 6) != 0;
+    snprintf(out, n, "..:%02x:%02x %s%s%s", v[1], v[0], d->peer_id_addr.type == BLE_ADDR_PUBLIC ? "public" : "random",
+             via_rpa ? ", via private address" : "", peer_bonded(&d->peer_id_addr) ? ", paired" : "");
+}
+
+/* ---- Links NimBLE accepted but never reported ------------------------------------
+ * As a peripheral, NimBLE reports a link (BLE_GAP_EVENT_CONNECT) only after reading the
+ * phone's version and features. If that read is refused, the link is never reported, yet
+ * it holds a connection slot, and advertising fails with BLE_HS_ENOMEM while it lasts.
+ * A check on the host task ends such a link after UNREPORTED_MS. */
+#define UNREPORTED_MS 10000
+
+typedef struct {
+    uint16_t handle;
+    bool used, ended;
+    int64_t since;
+} unreported_t;
+
+static conn_t *conn_find(uint16_t h);
+/* Defined in NimBLE's ble_gap.c (ESP-IDF 6.0.1) but missing from its public header. */
+void ble_gap_conn_foreach_handle(ble_gap_conn_foreach_handle_fn *cb, void *arg);
+
+static unreported_t s_unrep[MAX_CONN + 1];
+static struct ble_npl_callout s_reap_co;
+static bool s_reap_init;
+
+typedef struct {
+    int n;
+    uint16_t h[MAX_CONN + 2];
+} handles_t;
+
+static int collect_handle(uint16_t h, void *arg)
+{
+    handles_t *l = arg;
+    if (l->n < (int)(sizeof(l->h) / sizeof(l->h[0]))) l->h[l->n++] = h;
+    return 0;
+}
+
+static void reap_unreported(void)
+{
+    handles_t l = {0};
+    ble_gap_conn_foreach_handle(collect_handle, &l); /* on the host task: the list cannot change under us */
+    int64_t now = edge_uptime_ms();
+    uint16_t end[MAX_CONN + 2];
+    int n_end = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < MAX_CONN + 1; i++) { /* forget links that are gone */
+        bool alive = false;
+        for (int j = 0; j < l.n; j++) alive |= s_unrep[i].used && s_unrep[i].handle == l.h[j];
+        if (!alive) s_unrep[i].used = false;
+    }
+    for (int j = 0; j < l.n; j++) {
+        if (conn_find(l.h[j])) continue; /* reported: the app knows it */
+        unreported_t *u = NULL, *free_slot = NULL;
+        for (int i = 0; i < MAX_CONN + 1; i++) {
+            if (s_unrep[i].used && s_unrep[i].handle == l.h[j]) u = &s_unrep[i];
+            else if (!s_unrep[i].used && !free_slot) free_slot = &s_unrep[i];
+        }
+        if (!u && free_slot) {
+            *free_slot = (unreported_t){.handle = l.h[j], .used = true, .since = now};
+            continue;
+        }
+        if (u && !u->ended && now - u->since >= UNREPORTED_MS) {
+            u->ended = true;
+            end[n_end++] = u->handle;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    for (int k = 0; k < n_end; k++) {
+        struct ble_gap_conn_desc d;
+        char tag[48] = "unknown";
+        if (ble_gap_conn_find(end[k], &d) == 0) peer_tag(&d, tag, sizeof(tag));
+        int rc = ble_gap_terminate(end[k], BLE_ERR_REM_USER_CONN_TERM);
+        ESP_LOGW(TAG, "conn %u never reported by the Bluetooth stack after %d s: ending it (peer %s, rc %d)", end[k],
+                 UNREPORTED_MS / 1000, tag, rc);
+    }
+}
+
+static void reap_cb(struct ble_npl_event *ev)
+{
+    reap_unreported();
+    ble_npl_callout_reset(&s_reap_co, ble_npl_time_ms_to_ticks32(1000));
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg);
 static void advertise(void);
 
@@ -442,7 +530,11 @@ static void advertise(void)
         .itvl_max = fast ? 240 : 1920,
     };
     rc = ble_gap_adv_start(s_own_addr_type, NULL, duration, &p, gap_event, NULL);
-    if (rc && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "adv start: %d", rc);
+    if (rc == BLE_HS_ENOMEM) {
+        ESP_LOGW(TAG, "adv start: no free link slot (rc %d)", rc);
+    } else if (rc && rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "adv start: %d", rc);
+    }
 }
 
 void edge_ble_open_pairing(uint32_t seconds)
@@ -534,10 +626,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             xSemaphoreTake(s_lock, portMAX_DELAY);
             conn_t *c = conn_add(event->connect.conn_handle);
             xSemaphoreGive(s_lock);
+            struct ble_gap_conn_desc pd;
+            char tag[48] = "unknown";
+            if (ble_gap_conn_find(event->connect.conn_handle, &pd) == 0) peer_tag(&pd, tag, sizeof(tag));
             if (!c) {
-                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_CONN_LIMIT);
+                ESP_LOGW(TAG, "conn %u refused: no free link slot (peer %s)", event->connect.conn_handle, tag);
+                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
-                ESP_LOGI(TAG, "connected (%d)", event->connect.conn_handle);
+                ESP_LOGI(TAG, "connected (%d): peer %s", event->connect.conn_handle, tag);
                 log_conn_params(event->connect.conn_handle, "opened", 0);
                 /* Bonded phones re-encrypt right away. A new phone starts pairing itself: if the Edge
                  * asked first, Android would ask its owner for consent before pairing, and the
@@ -547,6 +643,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                     ble_gap_security_initiate(event->connect.conn_handle);
                 }
             }
+        } else {
+            /* NimBLE also reports a link that ended before it was reported this way (BLE_HS_EAGAIN). */
+            ESP_LOGI(TAG, "conn %u closed before it opened (status %d)", event->connect.conn_handle,
+                     event->connect.status);
         }
         advertise();
         if (s_scan_want && !s_scanning) scan_apply();
@@ -559,7 +659,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         xSemaphoreGive(s_lock);
         edge_stream_link_down(event->disconnect.conn.conn_handle); /* unconfirmed records go to flash */
         s_passkey_active = false;
-        ESP_LOGI(TAG, "disconnected (reason 0x%x)", event->disconnect.reason);
+        char tag[48];
+        peer_tag(&event->disconnect.conn, tag, sizeof(tag));
+        ESP_LOGI(TAG, "disconnected (reason 0x%x): conn %u, peer %s", event->disconnect.reason,
+                 event->disconnect.conn.conn_handle, tag);
         s_fast_until = edge_uptime_ms() + FAST_ADV_MS;
         advertise();
         return 0;
@@ -575,8 +678,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_DATA_LEN_CHG:
-        ESP_LOGI(TAG, "conn %u data length: tx %u octets / %u us, rx %u octets / %u us",
-                 event->data_len_chg.conn_handle, event->data_len_chg.max_tx_octets, event->data_len_chg.max_tx_time,
+        /* NimBLE (ESP-IDF 6.0.1) leaves data_len_chg.conn_handle at 0, so no link number here. */
+        ESP_LOGI(TAG, "link data length: tx %u octets / %u us, rx %u octets / %u us",
+                 event->data_len_chg.max_tx_octets, event->data_len_chg.max_tx_time,
                  event->data_len_chg.max_rx_octets, event->data_len_chg.max_rx_time);
         return 0;
 
@@ -681,6 +785,12 @@ static void on_sync(void)
     s_tx_octets_cap = BOOT_TX_OCTETS;
     write_default_data_len(s_tx_octets_cap);
     if (bond_count() == 0) s_pair_until = FOREVER; /* first use: open until a phone pairs */
+    if (!s_reap_init) {
+        s_reap_init = true;
+        ble_npl_callout_init(&s_reap_co, nimble_port_get_dflt_eventq(), reap_cb, NULL);
+    }
+    memset(s_unrep, 0, sizeof(s_unrep));
+    ble_npl_callout_reset(&s_reap_co, ble_npl_time_ms_to_ticks32(1000));
     advertise();
     scan_apply();
 }

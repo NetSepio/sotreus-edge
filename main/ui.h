@@ -1,8 +1,8 @@
 // On-device UI: OLED screens, the PRG button and the LED.
 //
 // PRG short press   next screen (and wakes the display)
-// PRG hold 3-8 s    open Bluetooth pairing for 2 minutes
-// PRG hold 10 s     erase settings, pairings and records (counts down from 5 s)
+// PRG hold 3 s      open Bluetooth pairing for 2 minutes (opens while still held)
+// PRG hold 15 s     erase settings, pairings and records (counts down from 10 s)
 #pragma once
 
 void ui_init(void);

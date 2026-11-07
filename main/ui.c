@@ -27,10 +27,9 @@ static const char *TAG = "ui";
 #define POLL_MS         20
 #define REDRAW_MS       500
 #define BATTERY_MS      30000
-#define PAIR_HOLD_MS    3000
-#define PAIR_HOLD_MAX   8000
-#define RESET_WARN_MS   5000
-#define RESET_HOLD_MS   10000
+#define PAIR_HOLD_MS    3000    /* pairing opens while PRG is still held */
+#define RESET_WARN_MS   10000   /* erase countdown on the display */
+#define RESET_HOLD_MS   15000
 
 enum { SCREEN_STATUS = 0, SCREEN_LINK, SCREEN_ACCESS, SCREEN_MESH, SCREEN_COUNT };
 
@@ -248,6 +247,15 @@ static void draw_passkey(uint32_t passkey)
     line(7, "Enter it on the phone");
 }
 
+static void draw_pair_hold(void)
+{
+    header("PAIR");
+    line(2, "Pairing open.");
+    line(4, "Let go of PRG,");
+    line(5, "then tap Pair on");
+    line(6, "the phone.");
+}
+
 static void draw_reset(int64_t held_ms)
 {
     header("RESET");
@@ -285,6 +293,7 @@ static void ui_task(void *arg)
     int64_t pressed_at = 0;
     bool pressed = false;
     bool reset_fired = false;
+    bool pair_fired = false;
     int64_t last_redraw = 0, last_batt = edge_uptime_ms();
     s_last_activity = edge_uptime_ms();
 
@@ -300,14 +309,14 @@ static void ui_task(void *arg)
             pressed = true;
             pressed_at = t;
             reset_fired = false;
+            pair_fired = false;
         } else if (!down && pressed) {
             pressed = false;
             int64_t held = t - pressed_at;
             if (reset_fired) {
                 /* already handled */
-            } else if (held >= PAIR_HOLD_MS && held <= PAIR_HOLD_MAX) {
-                edge_ble_open_pairing(120);
-                s_screen = SCREEN_STATUS;
+            } else if (pair_fired) {
+                s_screen = SCREEN_STATUS; /* shows "Pairing open" and the time left */
                 wake();
             } else if (held < 1000) {
                 bool canned = s_display_on && s_screen == SCREEN_MESH && mesh_running() && mesh_canned_count() > 0;
@@ -335,6 +344,12 @@ static void ui_task(void *arg)
             last_redraw = 0;
         }
         int64_t held = pressed ? t - pressed_at : 0;
+        if (pressed && held >= PAIR_HOLD_MS && !pair_fired) {
+            pair_fired = true; /* open now, so letting go late cannot miss it */
+            edge_ble_open_pairing(120);
+            wake();
+            last_redraw = 0;
+        }
         if (pressed && held >= RESET_HOLD_MS && !reset_fired) {
             reset_fired = true;
             ESP_LOGW(TAG, "factory reset requested from the button");
@@ -385,6 +400,8 @@ static void ui_task(void *arg)
         ssd1306_clear();
         if (pressed && held >= RESET_WARN_MS && !reset_fired) {
             draw_reset(held);
+        } else if (pressed && pair_fired && !reset_fired && !b.passkey_active) {
+            draw_pair_hold();
         } else if (s_restarting) {
             draw_restart();
         } else if (b.passkey_active) {

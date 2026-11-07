@@ -115,8 +115,9 @@ make -C tests/host test
    ACCESS in Mesh mode. While the Edge restarts into another mode, the
    display shows "Switching to MESH" (or AWARE).
 2. **Pair a phone over Bluetooth.** Pairing is open until the first phone
-   bonds. Later, hold **PRG** for 3 s to open it for 2 minutes. The 6-digit
-   code appears on the display.
+   bonds. Later, hold **PRG** until the display shows "Pairing open"
+   (3 s), then let go: pairing stays open for 2 minutes. The 6-digit code
+   appears on the display.
 3. **Or use the setup page.** With no known Wi-Fi, the Edge runs
    `Sotreus-Edge-XXXX`; the password is on the LINK screen. Join it, and
    the setup page opens by itself as a sign-in sheet (captive portal). If it
@@ -136,8 +137,8 @@ make -C tests/host test
 | PRG button | Action |
 |---|---|
 | short press | next screen / wake display |
-| hold 3-8 s | open Bluetooth pairing for 2 minutes |
-| hold 10 s | factory reset (warning from 5 s; release to cancel) |
+| hold 3 s | open Bluetooth pairing for 2 minutes (opens while still held; let go) |
+| hold 15 s | factory reset (countdown from 10 s; let go to cancel) |
 
 ## Setup page
 
