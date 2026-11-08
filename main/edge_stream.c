@@ -16,7 +16,7 @@
 static const char *TAG = "stream";
 
 #define PEND_MAX     32      /* 8 KB of unconfirmed records */
-#define ACK_TIMEOUT  30000   /* ms without a confirmation while records wait */
+#define ACK_TIMEOUT  30000   /* ms a waiting record may go unconfirmed (from the later of the last ack and the moment it started waiting) */
 
 typedef struct {
     edge_rec_t rec;
@@ -66,6 +66,9 @@ static bool hook(edge_rec_t *rec)
     pend_t *p = &s_pend[(s_head + s_n) % PEND_MAX];
     p->rec = *rec;
     p->sent = false;
+    /* The 30 s wait starts when a record starts waiting, not at the last confirmation: after a
+     * quiet spell the first new record would otherwise count as overdue at once. */
+    if (s_n == 0) s_last_ack = edge_uptime_ms();
     s_n++;
     xSemaphoreGive(s_mx);
     if (s_task) xTaskNotifyGive(s_task);

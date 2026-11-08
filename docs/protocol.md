@@ -216,7 +216,9 @@ go to it instead of flash. Each still gets the next `seq`, so `(device_id,
 seq)` stays unique and records the phone already has never come back under
 another number. The phone confirms with `stream_ack` (cumulative); the Edge
 holds up to 32 unconfirmed records in RAM and writes them to flash, oldest
-first, when that buffer fills, when no confirmation arrives for 30 s, or when
+first, when that buffer fills, when a waiting record goes 30 s without a
+confirmation (counted from the later of the last `stream_ack` and the moment
+it started waiting), or when
 the link drops, the app unsubscribes or sends `stream_stop`. Stored `seq`
 values therefore still only increase, with gaps where records went to the
 phone. A phone should de-duplicate by `seq` (a record confirmed late may also
