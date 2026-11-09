@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "host/ble_hs.h"
 #include "host/ble_store.h"
 #include "host/util/util.h"
@@ -51,7 +52,11 @@ typedef struct {
     bool secured;
     bool sub_events;
     bool sub_records;
-    bool dle_set;      /* the settled payload limit was requested once on this link */
+    bool dle_set;      /* the settled payload step was scheduled once on this link */
+    bool full_size;    /* the settled step keeps 251-octet packets (the phone handles them) */
+    bool settled;      /* the settled step has run */
+    bool limited;      /* the settled step limited this link's payload */
+    uint16_t gen;      /* tells this link apart from a later one on the same handle */
     size_t rx_len;
     char *rx;
 } conn_t;
@@ -62,6 +67,7 @@ static conn_t s_conn[MAX_CONN];
 static uint16_t h_info, h_ctrl, h_events, h_records;
 static uint8_t s_own_addr_type;
 static volatile bool s_synced;
+static volatile bool s_closing; /* a planned restart is under way: no more advertising */
 static volatile bool s_scan_want, s_scan_active_mode, s_scanning;
 static volatile int64_t s_pair_until;
 /* Fast advertising after boot and after a link drops, so a bonded phone's background
@@ -77,6 +83,13 @@ static volatile uint16_t s_tx_octets_cap;
 #define BOOT_TX_OCTETS 27
 /* Applied this long after a paired phone's link is encrypted, when its own setup is done. */
 #define SETTLED_DLE_MS 3000
+/* Bonded phones whose app said they handle 251-octet packets (`ble_link`): their links skip the
+ * limit. Kept in NVS by identity address; a factory reset erases it with the bonds. */
+#define FULL_MAX CONFIG_BT_NIMBLE_MAX_BONDS
+static ble_addr_t s_full[FULL_MAX];
+static int s_full_n;
+static uint16_t s_gen;
+static esp_err_t full_save(const ble_addr_t *list, int n);
 static volatile bool s_passkey_active;
 static volatile uint32_t s_passkey;
 static bool s_adv_pairing_mode;
@@ -175,6 +188,34 @@ static void reap_unreported(void)
     }
 }
 
+static int conn_count(void);
+
+/* Runs on the host task, which may walk the link list. */
+static void close_cb(struct ble_npl_event *ev)
+{
+    if (ble_gap_adv_active()) ble_gap_adv_stop();
+    handles_t l = {0};
+    ble_gap_conn_foreach_handle(collect_handle, &l);
+    for (int k = 0; k < l.n; k++) ble_gap_terminate(l.h[k], BLE_ERR_REM_USER_CONN_TERM);
+    ESP_LOGI(TAG, "restarting: ending %d link(s)", l.n);
+}
+
+void edge_ble_close(uint32_t wait_ms)
+{
+    s_closing = true;
+    if (!s_synced) return;
+    static struct ble_npl_event ev;
+    ble_npl_event_init(&ev, close_cb, NULL);
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &ev);
+    for (uint32_t t = 0; t < wait_ms; t += 20) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        int n = conn_count();
+        xSemaphoreGive(s_lock);
+        if (!n) break;
+    }
+}
+
 static void reap_cb(struct ble_npl_event *ev)
 {
     reap_unreported();
@@ -203,6 +244,7 @@ static conn_t *conn_add(uint16_t h)
             s_conn[i].used = true;
             s_conn[i].handle = h;
             s_conn[i].mtu = 23;
+            s_conn[i].gen = ++s_gen;
             s_conn[i].rx = rx;
             return &s_conn[i];
         }
@@ -496,7 +538,7 @@ static void on_disc(const struct ble_gap_disc_desc *d)
 
 static void advertise(void)
 {
-    if (!s_synced) return;
+    if (!s_synced || s_closing) return;
     if (ble_gap_adv_active()) ble_gap_adv_stop();
     if (conn_count() >= MAX_CONN) return;
 
@@ -555,6 +597,10 @@ static void close_pairing(void)
 esp_err_t edge_ble_forget_all(void)
 {
     int rc = ble_store_clear();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_full_n = 0;
+    xSemaphoreGive(s_lock);
+    full_save(NULL, 0);
     s_pair_until = FOREVER;
     advertise();
     return rc == 0 ? ESP_OK : ESP_FAIL;
@@ -588,16 +634,35 @@ static void log_conn_params(uint16_t conn, const char *what, int status)
 }
 
 /* Limits a settled link's payload: a separate step, so it never collides with the phone's
- * connection-parameter or encryption procedures at connect. */
+ * connection-parameter or encryption procedures at connect. A phone that handles full-size
+ * packets keeps 251. `arg` packs the link's generation (high 16 bits) and handle. */
 static void settled_dle_task(void *arg)
 {
-    uint16_t h = (uint16_t)(uintptr_t)arg;
+    uint32_t v = (uint32_t)(uintptr_t)arg;
+    uint16_t h = (uint16_t)(v & 0xffff), gen = (uint16_t)(v >> 16);
     vTaskDelay(pdMS_TO_TICKS(SETTLED_DLE_MS));
     uint16_t o = s_tx_octets_cap;
-    struct ble_gap_conn_desc d;
-    if (o && ble_gap_conn_find(h, &d) == 0) {
+    bool mine = false, full = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    conn_t *c = conn_find(h);
+    if (c && c->gen == gen) {
+        mine = true;
+        full = c->full_size;
+        c->settled = true;
+        c->limited = o && !full;
+    }
+    xSemaphoreGive(s_lock);
+    if (mine && o && full) {
+        ESP_LOGI(TAG, "conn %u settled: full-size link payload kept (the phone handles it)", h);
+    } else if (mine && o) {
         int rc = ble_gap_set_data_len(h, o, (uint16_t)((o + 14) * 8));
         ESP_LOGI(TAG, "conn %u settled: link payload limited to %u octets (rc %d)", h, o, rc);
+        if (rc != 0) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            c = conn_find(h);
+            if (c && c->gen == gen) c->limited = false;
+            xSemaphoreGive(s_lock);
+        }
     }
     vTaskDelete(NULL);
 }
@@ -607,6 +672,100 @@ void edge_ble_set_tx_octets(uint16_t octets)
     /* New links only: a request on a live link can collide with one still pending. */
     s_tx_octets_cap = octets;
     write_default_data_len(octets);
+}
+
+/* ---- Full-size packets, per phone ------------------------------------------------- */
+
+#define FULL_NS  "edge_ble"
+#define FULL_KEY "full"
+
+static void full_load(void)
+{
+    nvs_handle_t nh;
+    size_t len = sizeof(s_full);
+    s_full_n = 0;
+    if (nvs_open(FULL_NS, NVS_READONLY, &nh) != ESP_OK) return;
+    if (nvs_get_blob(nh, FULL_KEY, s_full, &len) == ESP_OK) s_full_n = (int)(len / sizeof(s_full[0]));
+    nvs_close(nh);
+}
+
+static esp_err_t full_save(const ble_addr_t *list, int n)
+{
+    nvs_handle_t nh;
+    esp_err_t err = nvs_open(FULL_NS, NVS_READWRITE, &nh);
+    if (err != ESP_OK) return err;
+    err = n ? nvs_set_blob(nh, FULL_KEY, list, (size_t)n * sizeof(list[0])) : nvs_erase_key(nh, FULL_KEY);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(nh);
+    nvs_close(nh);
+    return err;
+}
+
+/* Caller holds s_lock. */
+static int full_index(const ble_addr_t *a)
+{
+    for (int i = 0; i < s_full_n; i++) {
+        if (s_full[i].type == a->type && memcmp(s_full[i].val, a->val, 6) == 0) return i;
+    }
+    return -1;
+}
+
+/* Caller holds s_lock. Copies the list out so it can be saved after the lock is released. */
+static int full_remove_locked(const ble_addr_t *a, ble_addr_t *copy)
+{
+    int i = full_index(a);
+    if (i < 0) return -1;
+    memmove(&s_full[i], &s_full[i + 1], (size_t)(s_full_n - i - 1) * sizeof(s_full[0]));
+    s_full_n--;
+    memcpy(copy, s_full, (size_t)s_full_n * sizeof(s_full[0]));
+    return s_full_n;
+}
+
+/* A phone whose bond is gone starts with the limit again until its app asks. */
+static void full_forget(const ble_addr_t *a)
+{
+    ble_addr_t copy[FULL_MAX];
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = full_remove_locked(a, copy);
+    xSemaphoreGive(s_lock);
+    if (n >= 0) full_save(copy, n);
+}
+
+esp_err_t edge_ble_full_size(int conn, int set, bool *stored, bool *this_link)
+{
+    struct ble_gap_conn_desc d;
+    if (conn < 0 || conn > 0xffff || ble_gap_conn_find((uint16_t)conn, &d) != 0) return ESP_ERR_NOT_FOUND;
+    if (!peer_bonded(&d.peer_id_addr)) return ESP_ERR_INVALID_STATE;
+    ble_addr_t copy[FULL_MAX];
+    int n = -1;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    conn_t *c = conn_find((uint16_t)conn);
+    if (!c) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+    int i = full_index(&d.peer_id_addr);
+    if (set == 1 && i < 0) {
+        if (s_full_n == FULL_MAX) { /* the oldest entry goes: its phone may no longer be bonded */
+            memmove(&s_full[0], &s_full[1], (size_t)(FULL_MAX - 1) * sizeof(s_full[0]));
+            s_full_n--;
+        }
+        s_full[s_full_n++] = d.peer_id_addr;
+        n = s_full_n;
+        memcpy(copy, s_full, (size_t)n * sizeof(s_full[0]));
+    } else if (set == 0 && i >= 0) {
+        n = full_remove_locked(&d.peer_id_addr, copy);
+    }
+    if (set >= 0 && !c->settled) c->full_size = set == 1; /* this link follows while its step is pending */
+    *stored = full_index(&d.peer_id_addr) >= 0;
+    *this_link = c->settled ? !c->limited : !(c->dle_set && s_tx_octets_cap && !c->full_size);
+    xSemaphoreGive(s_lock);
+    if (n >= 0) {
+        ESP_LOGI(TAG, "conn %d: full-size link packets %s for this phone (this link %s)", conn,
+                 *stored ? "on" : "off", *this_link ? "full size" : "limited");
+        if (full_save(copy, n) != ESP_OK) return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -690,16 +849,28 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_ENC_CHANGE: {
         bool secured = event->enc_change.status == 0 && link_secured(event->enc_change.conn_handle);
+        struct ble_gap_conn_desc ed;
+        bool have_id = ble_gap_conn_find(event->enc_change.conn_handle, &ed) == 0;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         conn_t *c = conn_find(event->enc_change.conn_handle);
         if (c) c->secured = secured;
         /* Once per link: a second data-length request while the first is unanswered stalls the
          * controller's HCI for seconds and NimBLE resets (seen with an Android 9 phone). */
         bool want_dle = secured && s_tx_octets_cap && c && !c->dle_set;
-        if (want_dle) c->dle_set = true;
-        xSemaphoreGive(s_lock);
+        uint32_t dle_arg = 0;
         if (want_dle) {
-            xTaskCreate(settled_dle_task, "ble_dle", 2560, (void *)(uintptr_t)event->enc_change.conn_handle, 5, NULL);
+            c->dle_set = true;
+            c->full_size = have_id && full_index(&ed.peer_id_addr) >= 0;
+            dle_arg = ((uint32_t)c->gen << 16) | event->enc_change.conn_handle;
+        }
+        bool stored_full = want_dle && c->full_size;
+        xSemaphoreGive(s_lock);
+        if (stored_full) {
+            ESP_LOGI(TAG, "conn %u: this phone keeps full-size link packets (stored setting)",
+                     event->enc_change.conn_handle);
+        }
+        if (want_dle) {
+            xTaskCreate(settled_dle_task, "ble_dle", 2560, (void *)(uintptr_t)dle_arg, 5, NULL);
         }
         if (s_passkey_active) {
             s_passkey_active = false;
@@ -735,6 +906,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         struct ble_gap_conn_desc d;
         if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &d) == 0) {
             ble_store_util_delete_peer(&d.peer_id_addr);
+            full_forget(&d.peer_id_addr);
         }
         return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
@@ -812,6 +984,7 @@ esp_err_t edge_ble_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
     s_rec_lock = xSemaphoreCreateMutex();
+    full_load();
     snprintf(s_name, sizeof(s_name), "Sotreus Edge %s", edge_identity()->suffix);
 
     esp_err_t err = nimble_port_init();

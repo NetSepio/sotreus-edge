@@ -89,9 +89,20 @@ int edge_app_mode(void)
     return s_mode;
 }
 
+/* A planned restart keeps the phone's unconfirmed hand-off records: they go to flash first.
+ * Then the stream's "stopped" event gets about three connection events to go out, and the links
+ * are ended so phones see the drop at once. Its own task: the timer task's stack is too small. */
+static void restart_task(void *arg)
+{
+    edge_stream_close();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    edge_ble_close(500);
+    esp_restart();
+}
+
 static void reboot_cb(void *arg)
 {
-    esp_restart();
+    if (xTaskCreate(restart_task, "restart", 4096, NULL, 10, NULL) != pdPASS) esp_restart();
 }
 
 void edge_app_reboot_later(uint32_t delay_ms)

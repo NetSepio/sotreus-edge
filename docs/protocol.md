@@ -35,7 +35,13 @@ record types) keep the version. Breaking changes bump it.
 * **Link-layer packets.** 3 s after a paired phone's link is encrypted, the
   Edge limits the packets it sends to 27 bytes, once per link. With 251-byte
   packets an Android 9 phone (Huawei, Bluetooth 4.2) lost every link within
-  two minutes. The limit lowers throughput, so keep polling light.
+  two minutes. The limit lowers throughput and needs about 5 times as many
+  packets per record, so keep polling light. A phone that handles 251-byte
+  packets can say so with `ble_link` (needs `caps.ble_full_size`). The Edge
+  remembers that for the bonded phone and leaves its links at 251. Send it
+  after the handshake on every link while the setting is on. If it arrives
+  before the 3 s step, the current link keeps 251 too; otherwise the next
+  link does. The Edge never changes a live link's packet size for it.
 * **Framing.** `control` and `events` carry a byte stream of UTF-8 JSON
   objects, each ending in `\n`. Chunks follow the ATT MTU. Concatenate the
   chunks and split on `\n`. Request MTU 517; the Edge prefers 512.
@@ -68,7 +74,8 @@ example `sotreus-96ff.local`). It advertises `_http._tcp` and
 takes `diag`, which returns heap and per-task stack headroom. For link
 tests, `{"cmd":"diag","ble_tx_octets":N}` sets the link-layer payload the
 Edge limits new paired links to (27-251; 0 means 251) until the next
-restart. Live links are left alone. The console logs connection parameter,
+restart. Live links and phones that asked for full-size packets
+(`ble_link`) are left alone. The console logs connection parameter,
 PHY and data-length changes.
 
 ### HTTP and WebSocket
@@ -106,7 +113,7 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | cmd | Parameters | Result |
 |---|---|---|
 | `info` | | `info` (section 5) |
-| `status` | | `status`: uptime, clock, battery (`present`, `source`: `battery` \| `usb` \| `unknown`), link, ble, awareness, log, mesh |
+| `status` | | `status`: uptime, clock, battery (`present`, `source`: `battery` \| `usb` \| `unknown`; `mv` and `percent_approx` only when present), link, ble, awareness, log, mesh. `present` needs about 5 minutes of steady readings (a charger with no cell behind it wanders). Until then `source` is `usb` if the readings already wander, else `unknown` |
 | `get_config` | | `config` (section 6) |
 | `set_config` | `config`: partial config object | new `config`; applies without a restart, except a mode change |
 | `set_mode` | `mode`: `awareness` \| `mesh` | new `config`; the Edge restarts into that mode about 2.5 s later (HTTP sessions end) |
@@ -118,7 +125,7 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `new_pin` | | `pin`; ends every HTTP session |
 | `sync` | `from`, optional `limit` | BLE only. Response has `oldest`, `head`; then records stream on `records`, then a `sync_done` event |
 | `sync_confirm` | `seq` | the phone has safely stored every record up to and including `seq` (after its database commit). They are no longer served and their flash is erased in the background (about 1 s per 1,000 records). Result: `deleted_through` (capped at the newest stored seq). `status.log.deleted_after_sync` / `deleting` report progress. |
-| `stream_start` | | Bluetooth only, after subscribing to the records characteristic. From now on every new record is sent on the records characteristic (raw 256 bytes, as in `sync`) instead of being stored. Result: `stored_head`, the newest stored seq, so the app can `sync` what was stored before, and `first_seq`, the seq of the first handed-off record. Sent while a hand-off runs, it restarts it (unconfirmed records are stored first). See "Phone hand-off" below. |
+| `stream_start` | | Bluetooth only, after subscribing to the records characteristic. From now on every new record is sent on the records characteristic (raw 256 bytes, as in `sync`) instead of being stored. Result: `stored_head`, the newest stored seq, so the app can `sync` what was stored before, and `first_seq`, the seq of the first handed-off record. Sent while a hand-off runs, it restarts it (unconfirmed records are stored first). Refused with `the Edge is restarting` once a planned restart has begun. See "Phone hand-off" below. |
 | `stream_ack` | `seq` | the app has every record up to and including `seq` |
 | `stream_stop` | | ends the hand-off; records not yet confirmed are stored |
 | `records` | `from`, `limit ≤ 20` | `records` (JSON views), `next` |
@@ -146,6 +153,7 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `ctx_get` / `ctx_set` | `ctx`: object (≤ 2 KB) | Context-page settings, stored on the Edge as an opaque JSON object owned by the web app (area rounded to 0.1°, enabled sources) |
 | `diag` | | free heap, largest free block, per-task minimum free stack |
 | `pairing_open` | `seconds` (default 120) | |
+| `ble_link` | optional `full_size`: bool | Bluetooth only, from a paired phone. With `full_size`, stores whether this phone's links keep 251-byte link-layer packets instead of the 27-byte limit (see "Link-layer packets"); without it, only reads. Result: `full_size` (this phone's setting) and `this_link`: `full_size` \| `limited` (what the current link has, or will have once its 3 s step runs). Removing the phone's bond also clears its setting. Needs `caps.ble_full_size`. |
 | `ble_forget_all` | `confirm: true` | removes every bond and reopens pairing |
 | `reboot` | | |
 | `factory_reset` | `confirm: true` | erases settings, networks, bonds, identity and records, then reboots |
@@ -222,8 +230,37 @@ it started waiting), or when
 the link drops, the app unsubscribes or sends `stream_stop`. Stored `seq`
 values therefore still only increase, with gaps where records went to the
 phone. A phone should de-duplicate by `seq` (a record confirmed late may also
-be stored). Sequence numbers survive restarts: the Edge keeps a floor in NVS
-1,024 ahead of the last one used.
+be stored). Sequence numbers survive restarts: the Edge keeps a floor in NVS,
+moved 1,024 ahead each time numbering reaches it. After a restart, numbering
+resumes at that floor, so up to 1,024 numbers are skipped, never reused. A
+planned restart (`reboot`, a mode change, an update) first writes the
+unconfirmed handed-off records to flash and ends the hand-off (`stream` event
+`stopped`, reason `Edge restarting`), so `sync` them after reconnecting. About
+150 ms later it ends each Bluetooth link (reason 0x13), so the phone sees the
+drop at once. A crash, a watchdog reset or a power loss loses those records.
+Every restart loses the sightings still open in RAM.
+
+**Records lost at a restart.** `status.log.restart_loss` counts records a
+restart lost: numbered, but neither stored nor confirmed with `stream_ack`.
+After a planned restart that is at most a record caught mid-write.
+
+```json
+"restart_loss": {"since_boot": 57, "records": 3,
+                 "ranges": [{"boot": 58, "from": 30650, "to": 30652}]}
+```
+
+- `ranges`: the latest 8 restarts that lost records, oldest first. Each holds
+  the seqs `from`..`to` numbered during boot `boot` (`info.boot`). Records
+  sent but not yet confirmed fall in a range too, so the phone may already
+  hold some: count only the seqs it doesn't have. Numbers skipped at the floor
+  are never in a range.
+- `records`: the total since `since_boot`, including ranges no longer listed.
+- `since_boot`: the count lives in RAM that survives a software restart, a
+  crash or a watchdog reset, but not a power loss or the reset pin (flashing
+  uses it). After those it starts again at the new boot. If `since_boot` is
+  later than the last boot the phone saw, the loss at the restart into
+  `since_boot` is not known.
+- Firmware without the count leaves `restart_loss` out.
 
 The `stream_start` result fixes the boundary exactly. Every record numbered
 below `first_seq` is either stored (up to `stored_head`; `sync` it) or was
@@ -235,6 +272,14 @@ number means the RAM buffer was full and that record went to flash: stop
 the hand-off, `sync`, and start again. Do not expect `stored_head + 1` as the
 first live record. Sending `stream_start` while a hand-off runs restarts it
 with a new `first_seq`, after writing the unconfirmed records to flash.
+
+**Bad packets.** Rarely, the Edge's Bluetooth controller garbles a packet on
+the air: about once per 70,000 packets in phone tests, with or without the
+27-byte limit. Usually the phone sees the bad packet and drops the link
+(Android reports a MIC failure, 0x3D). Once in those tests a record arrived
+with a valid link check but a wrong CRC. Check every record's CRC. On a bad
+one, drop it, stop the hand-off, `sync`, and start again. The Edge still has
+that record, because it was never confirmed.
 
 **Full tables.** The Edge keeps open sightings in RAM tables (128 Bluetooth,
 48 access points, 48 probing devices). When a table is full a newcomer still
@@ -350,7 +395,7 @@ Static for a boot, so it is safe for long BLE reads:
  "probe_salt":"…","caps":{"ble_observation":true,"wifi24_observation":true,
  "wifi_probe_observation":true,"gnss":false,"local_storage":true,"firmware_switching":false,
  "meshtastic_mode":true,"lora":true,"display":true,"battery":true,"ota_upload":true,
- "live_sightings":true,"placement":true}}
+ "live_sightings":true,"placement":true,"ble_full_size":true}}
 ```
 
 `firmware_switching` is false because mesh mode is built in. It is not a

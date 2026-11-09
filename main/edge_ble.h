@@ -39,6 +39,14 @@ void edge_ble_send_line(int conn, const char *line, size_t len);
 bool edge_ble_has_subscriber(void);
 /** Diagnostic (USB console): cap the link-layer payload the Edge sends; 0 restores the default. */
 void edge_ble_set_tx_octets(uint16_t octets);
+/**
+ * Full-size (251-octet) link packets for the bonded phone on `conn`, remembered across links and
+ * restarts. `set` < 0 only reads; 0 or 1 stores. `*stored` is the phone's setting, `*this_link`
+ * whether this link has (or, while its settled step is pending, will keep) full-size packets.
+ * ESP_ERR_NOT_FOUND: no such link. ESP_ERR_INVALID_STATE: the phone is not bonded.
+ * ESP_FAIL: applied for this boot but not saved.
+ */
+esp_err_t edge_ble_full_size(int conn, int set, bool *stored, bool *this_link);
 
 /**
  * Streams records with seq >= from (at most `limit`) on the records
@@ -54,6 +62,12 @@ bool edge_ble_records_ready(int conn);
 
 /** Accept new pairings for `seconds`. */
 void edge_ble_open_pairing(uint32_t seconds);
+/**
+ * Before a planned restart: stops advertising and ends every link, so phones see the drop at once
+ * instead of after their supervision timeout. Waits up to `wait_ms` for the links to close.
+ */
+void edge_ble_close(uint32_t wait_ms);
+
 /** Removes every bond and reopens pairing. */
 esp_err_t edge_ble_forget_all(void);
 

@@ -53,6 +53,22 @@ typedef struct {
     bool releasing;
 } edge_log_stats_t;
 
+/** Records numbered in `boot` (seq `from`..`to`) that were neither stored nor confirmed when it restarted. */
+typedef struct {
+    uint32_t boot;
+    uint32_t from;
+    uint32_t to;
+} edge_log_lost_t;
+
+#define EDGE_LOG_LOST_MAX 8
+
+typedef struct {
+    uint32_t since_boot;  /* counting runs from this boot; 0 = not counting (log unavailable) */
+    uint32_t total;       /* records lost at restarts since then, including ranges no longer listed */
+    int n;
+    edge_log_lost_t r[EDGE_LOG_LOST_MAX]; /* newest last; only restarts that lost records */
+} edge_log_restart_loss_t;
+
 esp_err_t edge_log_init(void);
 
 /**
@@ -82,6 +98,15 @@ uint32_t edge_log_next_seq(void);
 int edge_log_read_from(uint32_t from_seq, edge_rec_t *out, int max);
 
 void edge_log_stats(edge_log_stats_t *out);
+
+/**
+ * Records lost at restarts. Counted in RTC memory, which survives a software restart, a crash and
+ * a watchdog reset; after a power loss or the reset pin (flashing uses it) the count starts again
+ * at that boot and the loss at that restart is not known.
+ */
+void edge_log_restart_loss(edge_log_restart_loss_t *out);
+/** The phone confirmed every handed-off record up to `seq` (none of them is in flash). */
+void edge_log_delivered(uint32_t seq);
 
 /**
  * The phone has safely stored every record up to `through`: they are no longer served and their

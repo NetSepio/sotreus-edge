@@ -84,8 +84,13 @@ void edge_battery_init(void)
     edge_battery_update();
 }
 
-/* Recent readings: a cell is steady, a charger with no cell behind it wanders. */
-#define HIST 6
+/* Readings 30 s apart: a cell holds steady, a charger with no cell behind it wanders. With no
+ * cell, the Heltec V3's charger output saws between about 4.03 and 4.17 V every 1-2 minutes,
+ * which a short window can mistake for a cell. So a battery counts as present only after a
+ * full 5 minutes of readings within STEADY_MV; until then it is not known. */
+#define HIST      10
+#define STEADY_MV 60
+
 static int s_hist[HIST];
 static int s_hist_n;
 
@@ -104,16 +109,18 @@ void edge_battery_update(void)
     memmove(&s_hist[1], &s_hist[0], (HIST - 1) * sizeof(int));
     s_hist[0] = mv;
     if (s_hist_n < HIST) s_hist_n++;
+    int h_lo = mv, h_hi = mv;
     for (int i = 0; i < s_hist_n; i++) {
-        if (s_hist[i] < lo) lo = s_hist[i];
-        if (s_hist[i] > hi) hi = s_hist[i];
+        if (s_hist[i] < h_lo) h_lo = s_hist[i];
+        if (s_hist[i] > h_hi) h_hi = s_hist[i];
     }
     s_last.mv = (uint32_t)(mv < 0 ? 0 : mv);
-    /* Above 4.25 V no LiPo is connected (the charger stops at 4.2 V); a spread of
-     * more than ~150 mV between readings is the charger output, not a cell. */
-    bool external = hi > 4250 || (hi - lo) > 150;
+    /* Above 4.25 V no LiPo is connected (the charger stops at 4.2 V). A spread of more than
+     * ~150 mV within one reading, or more than STEADY_MV across the window, is the charger
+     * output, not a cell. Load spikes within one reading are left to the wider limit. */
+    bool external = hi > 4250 || h_hi > 4250 || (hi - lo) > 150 || (h_hi - h_lo) > STEADY_MV;
     s_last.external = external && mv > 3000;
-    s_last.present = !external && mv >= 3000 && mv <= 4250;
+    s_last.present = s_hist_n == HIST && !external && mv >= 3000 && mv <= 4250;
     s_last.percent = s_last.present ? lipo_percent(s_last.mv) : 0;
 }
 

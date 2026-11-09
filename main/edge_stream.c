@@ -30,6 +30,7 @@ static int s_head, s_n;
 static volatile bool s_active;
 static volatile int s_conn = -1;
 static volatile bool s_stop_req;
+static volatile bool s_closed; /* the Edge is restarting: no new hand-off */
 static const char *volatile s_stop_reason;
 /* Each start gets a new generation; a stop meant for an earlier one is ignored. */
 static volatile uint32_t s_gen, s_stop_gen;
@@ -159,6 +160,11 @@ esp_err_t edge_stream_start(int conn, uint32_t *first_seq, uint32_t *stored_head
      * between reading first_seq and switching the route to the phone. */
     edge_log_route_lock();
     xSemaphoreTake(s_mx, portMAX_DELAY);
+    if (s_closed) {
+        xSemaphoreGive(s_mx);
+        edge_log_route_unlock();
+        return ESP_FAIL;
+    }
     if (s_active && s_conn != conn && !s_stop_req) {
         xSemaphoreGive(s_mx);
         edge_log_route_unlock();
@@ -208,14 +214,30 @@ void edge_stream_stop(void)
     if (s_task) xTaskNotifyGive(s_task);
 }
 
+void edge_stream_close(void)
+{
+    /* Under both locks, so no stream_start slips in after this and `gen` is the last one. */
+    edge_log_route_lock();
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    s_closed = true;
+    uint32_t gen = s_gen;
+    xSemaphoreGive(s_mx);
+    edge_log_route_unlock();
+    do_stop("Edge restarting", gen);
+}
+
 void edge_stream_ack(uint32_t seq)
 {
+    uint32_t done = 0;
     xSemaphoreTake(s_mx, portMAX_DELAY);
     while (s_pend && s_n && s_pend[s_head].sent && s_pend[s_head].rec.seq <= seq) {
+        done = s_pend[s_head].rec.seq;
         s_head = (s_head + 1) % PEND_MAX;
         s_n--;
         s_delivered++;
     }
+    /* s_mx then the log's lock: the same order as the hook's flash writes. */
+    if (done) edge_log_delivered(done);
     if (seq > s_last_acked) s_last_acked = seq;
     s_last_ack = edge_uptime_ms();
     xSemaphoreGive(s_mx);

@@ -229,6 +229,7 @@ cJSON *edge_api_info_json(void)
     cJSON_AddTrueToObject(caps, "ota_upload");
     cJSON_AddTrueToObject(caps, "live_sightings"); /* `live` command and seen.body */
     cJSON_AddTrueToObject(caps, "placement");      /* config.placement */
+    cJSON_AddTrueToObject(caps, "ble_full_size");  /* `ble_link` command */
     return o;
 }
 
@@ -309,6 +310,21 @@ cJSON *edge_api_status_json(void)
     cJSON_AddNumberToObject(lj, "write_failures", ls.failed);
     cJSON_AddNumberToObject(lj, "deleted_after_sync", ls.released);
     cJSON_AddBoolToObject(lj, "deleting", ls.releasing);
+    edge_log_restart_loss_t rl;
+    edge_log_restart_loss(&rl);
+    if (rl.since_boot) {
+        cJSON *rj = cJSON_AddObjectToObject(lj, "restart_loss");
+        cJSON_AddNumberToObject(rj, "since_boot", rl.since_boot);
+        cJSON_AddNumberToObject(rj, "records", rl.total);
+        cJSON *ra = cJSON_AddArrayToObject(rj, "ranges");
+        for (int i = 0; i < rl.n; i++) {
+            cJSON *x = cJSON_CreateObject();
+            cJSON_AddNumberToObject(x, "boot", rl.r[i].boot);
+            cJSON_AddNumberToObject(x, "from", rl.r[i].from);
+            cJSON_AddNumberToObject(x, "to", rl.r[i].to);
+            cJSON_AddItemToArray(ra, x);
+        }
+    }
 
     cJSON_AddItemToObject(o, "stream", edge_stream_status_json());
     cJSON_AddItemToObject(o, "mesh", mesh_status_json());
@@ -1117,6 +1133,17 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
             }
             free(ts);
         }
+    } else if (strcmp(cmd, "ble_link") == 0) {
+        if (origin != EDGE_SINK_BLE) return err_resp("Bluetooth only: the setting is for the phone on this link");
+        int set = jbool(req, "full_size", &b) ? (b ? 1 : 0) : -1;
+        bool stored = false, now = false;
+        esp_err_t e = edge_ble_full_size(target, set, &stored, &now);
+        if (e == ESP_ERR_NOT_FOUND) return err_resp("the Bluetooth link is gone");
+        if (e == ESP_ERR_INVALID_STATE) return err_resp("this phone is not paired");
+        if (e != ESP_OK) return err_resp("could not save the setting; it applies until the Edge restarts");
+        r = ok_resp();
+        cJSON_AddBoolToObject(r, "full_size", stored);
+        cJSON_AddStringToObject(r, "this_link", now ? "full_size" : "limited");
     } else if (strcmp(cmd, "status") == 0) {
         r = ok_resp();
         cJSON_AddItemToObject(r, "status", edge_api_status_json());
@@ -1191,6 +1218,7 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         esp_err_t e = edge_stream_start(target, &first, &stored);
         if (e == ESP_ERR_INVALID_STATE) return err_resp("subscribe to the records characteristic first");
         if (e == ESP_ERR_NOT_SUPPORTED) return err_resp("another phone already receives the hand-off");
+        if (e == ESP_FAIL) return err_resp("the Edge is restarting");
         if (e != ESP_OK) return err_resp("no memory");
         r = ok_resp();
         cJSON_AddNumberToObject(r, "stored_head", stored); /* sync up to here for what was stored before */

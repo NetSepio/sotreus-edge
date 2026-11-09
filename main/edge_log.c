@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_rom_crc.h"
@@ -38,6 +39,34 @@ static volatile bool s_releasing;
 static uint32_t s_released;         /* records erased after confirmation since boot */
 #define FLOOR_STEP 1024
 
+/* Records lost at restarts. RTC memory survives a software restart, a crash and a watchdog reset,
+ * but not a power loss or the reset pin (flashing uses it); the CRC tells a kept block from
+ * leftover bits. Every seq above the largest of `safe`, the newest stored seq and the confirmed
+ * cut, up to `last`, was numbered but neither stored nor confirmed when the restart came. */
+#define RL_MAGIC 0x524c3031u /* "RL01" */
+typedef struct {
+    uint32_t magic;
+    uint32_t since_boot;  /* counting runs from this boot; the restart into it is not known */
+    uint32_t boot;        /* the boot that `last` and `safe` belong to */
+    uint32_t last;        /* last seq numbered in `boot` */
+    uint32_t safe;        /* seqs <= safe were confirmed by the phone or erased on purpose */
+    uint32_t total;
+    uint32_t n;
+    edge_log_lost_t r[EDGE_LOG_LOST_MAX]; /* newest last */
+    uint32_t crc;
+} restart_loss_t;
+static RTC_NOINIT_ATTR restart_loss_t s_rl;
+
+static uint32_t rl_crc(void)
+{
+    return esp_rom_crc32_le(0, (const uint8_t *)&s_rl, offsetof(restart_loss_t, crc));
+}
+
+static void rl_seal(void)
+{
+    s_rl.crc = rl_crc();
+}
+
 static uint32_t rec_crc(const edge_rec_t *r)
 {
     return esp_rom_crc32_le(0, (const uint8_t *)r, CRC_LEN);
@@ -71,6 +100,41 @@ static bool slot_blank(uint32_t slot)
 static uint32_t edge_cut_load(void)
 {
     return edge_log_cut_get();
+}
+
+/* Runs once at boot, after the head and the confirmed cut are known. */
+static void restart_loss_init(void)
+{
+    uint32_t boot = edge_identity()->boot_count;
+    bool kept = s_rl.magic == RL_MAGIC && s_rl.crc == rl_crc() && s_rl.n <= EDGE_LOG_LOST_MAX &&
+                s_rl.since_boot <= s_rl.boot && s_rl.boot < boot;
+    if (kept) {
+        uint32_t base = s_rl.safe;
+        if (s_head_seq > base) base = s_head_seq;
+        if (s_cut > base) base = s_cut;
+        if (s_rl.last > base) {
+            if (s_rl.n == EDGE_LOG_LOST_MAX) {
+                memmove(&s_rl.r[0], &s_rl.r[1], (EDGE_LOG_LOST_MAX - 1) * sizeof(s_rl.r[0]));
+                s_rl.n--;
+            }
+            s_rl.r[s_rl.n++] = (edge_log_lost_t){.boot = s_rl.boot, .from = base + 1, .to = s_rl.last};
+            s_rl.total += s_rl.last - base;
+            ESP_LOGW(TAG, "restart lost %lu record(s): seq %lu-%lu of boot %lu were neither stored nor confirmed",
+                     (unsigned long)(s_rl.last - base), (unsigned long)(base + 1), (unsigned long)s_rl.last,
+                     (unsigned long)s_rl.boot);
+        } else {
+            ESP_LOGI(TAG, "restart lost no records (counting since boot %lu)", (unsigned long)s_rl.since_boot);
+        }
+    } else {
+        memset(&s_rl, 0, sizeof(s_rl));
+        s_rl.magic = RL_MAGIC;
+        s_rl.since_boot = boot;
+        ESP_LOGI(TAG, "records lost at this restart: not known (RTC memory not kept); counting from boot %lu",
+                 (unsigned long)boot);
+    }
+    s_rl.boot = boot;
+    s_rl.last = s_rl.safe = s_next_seq - 1;
+    rl_seal();
 }
 
 static uint32_t oldest_locked(void)
@@ -134,6 +198,7 @@ esp_err_t edge_log_init(void)
 
     ESP_LOGI(TAG, "%lu slots, head seq %lu, oldest %lu, next %lu", (unsigned long)s_cap,
              (unsigned long)s_head_seq, (unsigned long)oldest_locked(), (unsigned long)s_next_seq);
+    restart_loss_init();
     return ESP_OK;
 }
 
@@ -161,6 +226,8 @@ static void assign_seq(edge_rec_t *rec)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     rec->seq = s_next_seq++;
+    s_rl.last = rec->seq;
+    rl_seal();
     bool save = s_next_seq >= s_floor_saved;
     if (save) s_floor_saved = s_next_seq + FLOOR_STEP;
     uint32_t floor = s_floor_saved;
@@ -313,6 +380,29 @@ void edge_log_stats(edge_log_stats_t *out)
     xSemaphoreGive(s_lock);
 }
 
+void edge_log_restart_loss(edge_log_restart_loss_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!s_part) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    out->since_boot = s_rl.since_boot;
+    out->total = s_rl.total;
+    out->n = (int)s_rl.n;
+    memcpy(out->r, s_rl.r, sizeof(out->r));
+    xSemaphoreGive(s_lock);
+}
+
+void edge_log_delivered(uint32_t seq)
+{
+    if (!s_part) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (seq > s_rl.safe && seq <= s_rl.last) {
+        s_rl.safe = seq;
+        rl_seal();
+    }
+    xSemaphoreGive(s_lock);
+}
+
 /* ---- Delete after a confirmed sync ------------------------------------------------- */
 
 /* Highest seq stored in a sector (record headers only), 0 if none. */
@@ -383,6 +473,11 @@ static void do_erase(void)
     /* Never reuse sequence numbers on this device. */
     s_floor_saved = s_next_seq + FLOOR_STEP;
     edge_seq_floor_set(s_floor_saved);
+    /* Stored records erased on purpose are not lost at a later restart. */
+    if (s_head_seq > s_rl.safe) {
+        s_rl.safe = s_head_seq;
+        rl_seal();
+    }
     xSemaphoreGive(s_lock);
 
     const size_t block = 64 * 1024;

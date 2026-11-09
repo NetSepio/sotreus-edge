@@ -25,6 +25,8 @@ void edge_stream_init(void);
 esp_err_t edge_stream_start(int conn, uint32_t *first_seq, uint32_t *stored_head);
 /** Stops it; unconfirmed records are written to flash. */
 void edge_stream_stop(void);
+/** Before a planned restart: writes the unconfirmed records to flash and refuses new hand-offs. */
+void edge_stream_close(void);
 /** The phone has every record up to and including seq. */
 void edge_stream_ack(uint32_t seq);
 /** Called when a Bluetooth link drops or unsubscribes from records. */
