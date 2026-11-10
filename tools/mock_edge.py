@@ -235,7 +235,7 @@ def handle_cmd(req, args):
     if c == "info":
         return {**ok, "info": {"protocol": 1, "device_id": "9f3c00aa11bb22cc", "name": "Sotreus Edge", "vendor": "NetSepio LLC",
                                "vendor_url": "https://netsepio.com", "product_url": "https://sotreus.com",
-                               "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.1.0", "idf": "v6.0.1",
+                               "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.2.0", "idf": "v6.0.1",
                                "hw": "heltec_wifi_lora_32_v3", "boot": 9, "record_size": 256, "record_format": 1,
                                "probe_salt": "00",
                                "caps": {"ble_observation": True, "wifi24_observation": True, "wifi_probe_observation": True,

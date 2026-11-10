@@ -390,7 +390,7 @@ Static for a boot, so it is safe for long BLE reads:
 
 ```json
 {"protocol":1,"device_id":"9f3c…","name":"Sotreus Edge","vendor":"NetSepio LLC",
- "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.1.0",
+ "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.2.0",
  "idf":"v6.0.1","hw":"heltec_wifi_lora_32_v3","boot":12,"record_size":256,"record_format":1,
  "probe_salt":"…","caps":{"ble_observation":true,"wifi24_observation":true,
  "wifi_probe_observation":true,"gnss":false,"local_storage":true,"firmware_switching":false,

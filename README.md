@@ -32,6 +32,25 @@ one is in range, and otherwise runs its own access point
 (`Sotreus-Edge-XXXX`). Other choices are `ap`, `sta` and `off` (Bluetooth
 only).
 
+## Supported boards
+
+| Board | Status |
+|---|---|
+| **Heltec WiFi LoRa 32 V3** (ESP32-S3FN8, 8 MB flash, SX1262, 0.96" OLED) | Supported. Tested on board rev 3.2. |
+| Other ESP32 dev boards, including other Heltec models | Not supported yet |
+
+This firmware is built only for the Heltec WiFi LoRa 32 V3. Its pin map
+(`main/board.h`), LoRa radio driver and 8 MB flash layout are made for that
+board, so don't flash it onto any other board. Heltec sells the V3 in two
+frequency versions: 863–928 MHz (for example `US` or `EU_868`) and
+470–510 MHz (`CN`). Get the one that covers your LoRa region.
+
+Support for more dev boards is planned for later releases. Each board will
+get its own firmware build: you choose your dev board, and the build made for
+it is the one flashed to its ESP32. The Edge already reports its board in
+`info.hw` (`heltec_wifi_lora_32_v3`), so the app and the setup page can tell
+boards apart.
+
 ## Layout
 
 ```
@@ -73,7 +92,8 @@ their place.
 
 ## Build and flash
 
-Requires ESP-IDF v6.0.x (`esp32s3` target). The `cjson` and `mdns`
+These steps are for the Heltec WiFi LoRa 32 V3 only (see
+[Supported boards](#supported-boards)). Requires ESP-IDF v6.0.x (`esp32s3` target). The `cjson` and `mdns`
 components come from the component manager.
 
 ```bash
