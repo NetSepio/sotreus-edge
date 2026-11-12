@@ -172,7 +172,7 @@ static void clamp(edge_config_t *c)
     if (c->tx_power > 30) c->tx_power = 30;
     if (c->nodeinfo_interval_s && c->nodeinfo_interval_s < 600) c->nodeinfo_interval_s = 600;
     edge_mesh_ext_t *x = &c->mx;
-    if (x->role > EDGE_ROLE_ROUTER_LATE || x->role == 3) x->role = EDGE_ROLE_CLIENT;
+    if (x->role > EDGE_ROLE_CLIENT_BASE || x->role == 3) x->role = EDGE_ROLE_CLIENT;
     if (x->pos_mode > EDGE_POS_CLIENT) x->pos_mode = EDGE_POS_OFF;
     if (x->pos_interval_s < 60) x->pos_interval_s = 60;
     if (x->telemetry_interval_s && x->telemetry_interval_s < 300) x->telemetry_interval_s = 300;

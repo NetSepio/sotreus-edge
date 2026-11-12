@@ -100,7 +100,8 @@ static const char *link_name(uint8_t l)
 
 static const char *const REBROADCAST[] = {"all", "all_skip_decoding", "local_only", "known_only", "none", "core_portnums_only"};
 static const char *const ROLES[] = {"CLIENT", "CLIENT_MUTE", "ROUTER", NULL, "REPEATER", "TRACKER", "SENSOR",
-                                    "TAK", "CLIENT_HIDDEN", "LOST_AND_FOUND", "TAK_TRACKER", "ROUTER_LATE"};
+                                    "TAK", "CLIENT_HIDDEN", "LOST_AND_FOUND", "TAK_TRACKER", "ROUTER_LATE",
+                                    "CLIENT_BASE"};
 static const char *const POS_MODES[] = {"off", "fixed", "client"};
 static const char *const NOTIFY_MODES[] = {"off", "message", "bell"};
 
@@ -230,6 +231,7 @@ cJSON *edge_api_info_json(void)
     cJSON_AddTrueToObject(caps, "live_sightings"); /* `live` command and seen.body */
     cJSON_AddTrueToObject(caps, "placement");      /* config.placement */
     cJSON_AddTrueToObject(caps, "ble_full_size");  /* `ble_link` command */
+    cJSON_AddTrueToObject(caps, "mesh_nodes_paging"); /* `mesh_nodes` takes offset/limit */
     return o;
 }
 
@@ -790,7 +792,7 @@ static const char *apply_config_json(const cJSON *j, edge_config_t *c)
         }
         edge_mesh_ext_t *x = &c->mx;
         if ((s = jstr(m, "role"))) {
-            int i = name_index(s, ROLES, 12);
+            int i = name_index(s, ROLES, 13);
             if (i < 0) return "unknown role";
             x->role = (uint8_t)i;
         }
@@ -1426,7 +1428,23 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         r = ok_resp();
     } else if (strcmp(cmd, "mesh_nodes") == 0) {
         r = ok_resp();
-        cJSON_AddItemToObject(r, "nodes", mesh_nodes_json());
+        double off, lim;
+        bool has_off = jnum(req, "offset", &off), has_lim = jnum(req, "limit", &lim);
+        if (!has_off && !has_lim) {
+            cJSON_AddItemToObject(r, "nodes", mesh_nodes_json()); /* unpaged, as before */
+        } else {
+            /* Paged like `live`: 64 nodes with telemetry is a lot over 27-byte Bluetooth packets. */
+            int total = 0, next = -1;
+            int o = !has_off || off < 0 ? 0 : off > 1000 ? 1000 : (int)off; /* bounded before the int cast */
+            int l = !has_lim || lim < 1 || lim > 64 ? 64 : (int)lim;
+            cJSON_AddItemToObject(r, "nodes", mesh_nodes_page_json(o, l, &total, &next));
+            cJSON_AddNumberToObject(r, "total", total);
+            if (next >= 0) {
+                cJSON_AddNumberToObject(r, "next", next);
+            } else {
+                cJSON_AddNullToObject(r, "next");
+            }
+        }
     } else if (strcmp(cmd, "mesh_messages") == 0) {
         r = ok_resp();
         cJSON_AddItemToObject(r, "messages", mesh_messages_json());

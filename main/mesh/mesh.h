@@ -68,6 +68,8 @@ bool mesh_canned_get(int index, char *out, size_t cap);
 void mesh_get_summary(mesh_summary_t *out);
 cJSON *mesh_status_json(void);
 cJSON *mesh_nodes_json(void);
+/** One page of the node table in table order: limit 1-64 (else 64); next = offset of the next page, -1 on the last. */
+cJSON *mesh_nodes_page_json(int offset, int limit, int *total, int *next);
 cJSON *mesh_messages_json(void);
 cJSON *mesh_waypoints_json(void);
 

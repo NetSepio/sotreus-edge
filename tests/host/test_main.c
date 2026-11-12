@@ -41,6 +41,40 @@ static void test_frequency(void)
     CHECK(NEAR(mesh_frequency_mhz(us, lf, "", 1), 902.125));
     CHECK(mesh_region_by_code(10) == in);
     CHECK(mesh_region_by_code(0) == NULL);
+
+    /* Meshtastic 2.7 additions. Expected values come from Meshtastic's formula in float32, worked out apart from
+     * this code: slot = djb2(name) % floor(span / bw), freq = start + bw/2 + slot * bw. */
+    const mesh_preset_t *lt = mesh_preset_by_name("LONG_TURBO");
+    CHECK(lt && lt->code == 9 && lt->bw_khz == 500.0f && lt->sf == 11 && lt->cr == 8 && strcmp(lt->display, "LongTurbo") == 0);
+    CHECK(mesh_preset_by_code(9) == lt && mesh_preset_by_name("LongTurbo") == lt);
+    CHECK(mesh_djb2("LongTurbo") == 26541281u);
+    CHECK(mesh_num_channels(us, lt) == 52 && mesh_channel_slot(us, lt, "", 0) == 13);
+    CHECK(NEAR(mesh_frequency_mhz(us, lt, "", 0), 908.75));
+
+    static const struct { const char *name; uint8_t code; uint32_t n, slot; double mhz; } NEW[] = {
+        {"PH_433", 19, 6, 5, 434.375},   {"PH_868", 20, 5, 0, 868.125},   {"PH_915", 21, 12, 11, 917.875},
+        {"ANZ_433", 22, 6, 5, 434.425},  {"KZ_433", 23, 6, 5, 434.45},    {"KZ_863", 24, 20, 15, 866.875},
+        {"NP_865", 25, 12, 11, 867.875}, {"BR_902", 26, 22, 7, 903.875},
+    };
+    for (size_t i = 0; i < sizeof(NEW) / sizeof(NEW[0]); i++) {
+        const mesh_region_t *r = mesh_region_by_name(NEW[i].name);
+        CHECK(r && r->code == NEW[i].code && mesh_region_by_code(NEW[i].code) == r);
+        if (!r) continue;
+        CHECK(mesh_num_channels(r, lf) == NEW[i].n);
+        CHECK(mesh_channel_slot(r, lf, "", 0) == NEW[i].slot);
+        CHECK(NEAR(mesh_frequency_mhz(r, lf, "", 0), NEW[i].mhz));
+    }
+    const mesh_region_t *th = mesh_region_by_name("TH");
+    CHECK(th && th->duty_cycle == 10 && th->power_limit == 27); /* NBTC rules, as in Meshtastic 2.7 */
+    CHECK(mesh_region_by_code(13) == NULL); /* LORA_24 needs a 2.4 GHz radio */
+
+    /* A preset wider than the band falls back to LONG_FAST; a band exactly as wide still fits. */
+    const mesh_preset_t *st = mesh_preset_by_name("SHORT_TURBO");
+    CHECK(mesh_preset_fits(eu, lf));
+    CHECK(!mesh_preset_fits(eu, st) && !mesh_preset_fits(eu, lt));
+    CHECK(mesh_preset_fits(mesh_region_by_name("RU"), lt));     /* 0.5 MHz band */
+    CHECK(mesh_preset_fits(mesh_region_by_name("UA_868"), lt)); /* 0.6 MHz band */
+    CHECK(mesh_preset_fits(us, lt));
 }
 
 static void test_channel_hash(void)
@@ -475,6 +509,30 @@ static void test_admin(void)
     pw_bytes(&w, 101, pk, 8);
     CHECK(mesh_admin_classify(req, w.len, &cls) && cls.variant == 34 && !cls.is_get && !cls.sensitive && cls.has_passkey);
     CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && res.cfg_changed && c.region == 3 && c.hop_limit == 5);
+
+    /* set_config device: role CLIENT_BASE (12) is taken; 13 is not a role and leaves it unchanged */
+    for (uint32_t role = 12; role <= 13; role++) {
+        pw_init(&w, req, sizeof(req));
+        a = pw_begin(&w, 34);
+        l = pw_begin(&w, 1);
+        pw_u(&w, 1, role);
+        pw_end(&w, l);
+        pw_end(&w, a);
+        pw_bytes(&w, 101, pk, 8);
+        CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && c.mx.role == 12);
+    }
+
+    /* set_config lora: LONG_TURBO (9) and region BR_902 (26) are taken */
+    pw_init(&w, req, sizeof(req));
+    a = pw_begin(&w, 34);
+    l = pw_begin(&w, 6);
+    pw_bool(&w, 1, true);
+    pw_u(&w, 2, 9);
+    pw_u(&w, 7, 26);
+    pw_end(&w, l);
+    pw_end(&w, a);
+    pw_bytes(&w, 101, pk, 8);
+    CHECK(mesh_admin_apply(req, w.len, &x, &c, &m, &res) && c.preset == 9 && c.region == 26);
 
     /* set_config security is sensitive; listing a key switches to keys-only */
     uint8_t key[32];

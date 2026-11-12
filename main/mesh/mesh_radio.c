@@ -4,7 +4,7 @@
 #include <string.h>
 #include <strings.h>
 
-/* Region table (subset usable with an SX1262: sub-GHz only). */
+/* Region table, matching Meshtastic 2.7 (subset usable with an SX1262: sub-GHz only, so no LORA_24). */
 static const mesh_region_t REGIONS[] = {
     {1, "US", 902.0f, 928.0f, 100, 0.0f, 30},
     {2, "EU_433", 433.0f, 434.0f, 10, 0.0f, 10},
@@ -17,12 +17,20 @@ static const mesh_region_t REGIONS[] = {
     {9, "RU", 868.7f, 869.2f, 100, 0.0f, 20},
     {10, "IN", 865.0f, 867.0f, 100, 0.0f, 30},
     {11, "NZ_865", 864.0f, 868.0f, 100, 0.0f, 36},
-    {12, "TH", 920.0f, 925.0f, 100, 0.0f, 16},
+    {12, "TH", 920.0f, 925.0f, 10, 0.0f, 27},  /* NBTC: 27 dBm, 10 % duty cycle */
     {14, "UA_433", 433.0f, 434.7f, 10, 0.0f, 10},
     {15, "UA_868", 868.0f, 868.6f, 1, 0.0f, 14},
     {16, "MY_433", 433.0f, 435.0f, 100, 0.0f, 20},
     {17, "MY_919", 919.0f, 924.0f, 100, 0.0f, 27},
     {18, "SG_923", 917.0f, 925.0f, 100, 0.0f, 20},
+    {19, "PH_433", 433.0f, 434.7f, 100, 0.0f, 10},
+    {20, "PH_868", 868.0f, 869.4f, 100, 0.0f, 14},
+    {21, "PH_915", 915.0f, 918.0f, 100, 0.0f, 24},
+    {22, "ANZ_433", 433.05f, 434.79f, 100, 0.0f, 14},
+    {23, "KZ_433", 433.075f, 434.775f, 100, 0.0f, 10},
+    {24, "KZ_863", 863.0f, 868.0f, 100, 0.0f, 30},
+    {25, "NP_865", 865.0f, 868.0f, 100, 0.0f, 30},
+    {26, "BR_902", 902.0f, 907.5f, 100, 0.0f, 30},
 };
 
 static const mesh_preset_t PRESETS[] = {
@@ -34,6 +42,7 @@ static const mesh_preset_t PRESETS[] = {
     {6, "SHORT_FAST", "ShortFast", 250.0f, 7, 5},
     {7, "LONG_MODERATE", "LongMod", 125.0f, 11, 8},
     {8, "SHORT_TURBO", "ShortTurbo", 500.0f, 7, 5},
+    {9, "LONG_TURBO", "LongTurbo", 500.0f, 11, 8},
 };
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -96,6 +105,12 @@ uint8_t mesh_xor_hash(const uint8_t *p, size_t n)
     uint8_t x = 0;
     for (size_t i = 0; i < n; i++) x ^= p[i];
     return x;
+}
+
+bool mesh_preset_fits(const mesh_region_t *r, const mesh_preset_t *p)
+{
+    /* Float arithmetic, as in Meshtastic, so a band exactly as wide as the preset (EU_868 and LongFast) fits. */
+    return (r->freq_end - r->freq_start) >= p->bw_khz / 1000.0f;
 }
 
 uint32_t mesh_num_channels(const mesh_region_t *r, const mesh_preset_t *p)

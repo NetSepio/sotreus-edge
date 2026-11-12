@@ -72,7 +72,9 @@ typedef struct {
     bool used;
     bool is_relay;
     bool track;
-    bool late;           /* ROUTER_LATE relay: not cancelled when others relay first */
+    bool keep;           /* relay never cancelled when another node relays first (ROUTER, ROUTER_LATE, CLIENT_BASE favourites) */
+    bool to_late;        /* ...it moves to the late window instead (ROUTER_LATE, CLIENT_BASE favourites) */
+    uint8_t cw;          /* contention window exponent from the SNR it was heard at */
     uint8_t len;
     uint8_t tries;
     uint32_t from, id, to;
@@ -171,7 +173,8 @@ static volatile bool s_running;
 static edge_config_t s_cfg;
 static edge_mesh_mod_t s_mod;
 static const mesh_region_t *s_region;
-static const mesh_preset_t *s_preset;
+static const mesh_preset_t *s_preset;    /* the preset in use */
+static bool s_preset_too_wide;           /* the set preset does not fit the region: LONG_FAST is used */
 static float s_freq;
 static chan_t s_ch[EDGE_MESH_MAX_CHANNELS];
 static int s_nch;
@@ -233,7 +236,8 @@ static struct {
 } s_st;
 
 static const char *ROLE_NAMES[] = {"CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT", "REPEATER", "TRACKER",
-                                   "SENSOR", "TAK", "CLIENT_HIDDEN", "LOST_AND_FOUND", "TAK_TRACKER", "ROUTER_LATE"};
+                                   "SENSOR", "TAK", "CLIENT_HIDDEN", "LOST_AND_FOUND", "TAK_TRACKER", "ROUTER_LATE",
+                                   "CLIENT_BASE"};
 
 /* ---- Helpers ---------------------------------------------------------------------- */
 
@@ -337,6 +341,46 @@ static node_t *node_get(uint32_t num, bool create)
     victim->last_heard_up = now_ms();
     s_dirty = true;
     return victim;
+}
+
+/* A node's byte in the relay_node and next_hop header fields (Meshtastic: a zero byte becomes 0xff). */
+static uint8_t last_byte(uint32_t num)
+{
+    return (num & 0xff) ? (uint8_t)(num & 0xff) : 0xff;
+}
+
+static bool is_favourite(uint32_t num)
+{
+    node_t *n = node_get(num, false);
+    return n && (n->flags & NF_FAV);
+}
+
+/* CLIENT_BASE treats a packet from or to a favourite like ROUTER_LATE would. */
+static bool favourite_packet(uint32_t from, uint32_t to)
+{
+    return is_favourite(from) || (to != MT_BROADCAST && is_favourite(to));
+}
+
+static bool router_role(uint8_t role)
+{
+    return role == EDGE_ROLE_ROUTER || role == EDGE_ROLE_ROUTER_LATE || role == EDGE_ROLE_CLIENT_BASE;
+}
+
+/* Meshtastic 2.7 shouldDecrementHopLimit: a ROUTER, ROUTER_LATE or CLIENT_BASE relaying a packet that a favourite
+ * node of one of those roles just relayed keeps its hop limit. The first hop always counts. */
+static bool keeps_hop_limit(const mt_header_t *h)
+{
+    if (!router_role(s_cfg.mx.role)) return false;
+    uint8_t start = mt_hop_start(h), limit = mt_hop_limit(h);
+    if (start > 0 && start == limit) return false; /* first hop */
+    for (int i = 0; s_nodes && i < MAX_NODES; i++) {
+        const node_t *n = &s_nodes[i];
+        if (n->num && (n->flags & NF_FAV) && (n->flags & NF_USER) && router_role(n->role) &&
+            last_byte(n->num) == h->relay_node) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static int node_count(void)
@@ -606,14 +650,24 @@ static tx_item_t *txq_alloc(void)
     return NULL;
 }
 
-static bool txq_cancel_relay(uint32_t from, uint32_t id)
+/* Another node relayed a packet we are waiting to relay (Meshtastic perhapsCancelDupe). Only a relay heard over LoRa
+ * cancels ours. Returns true when ours was dropped. */
+static bool txq_heard_relay(uint32_t from, uint32_t id, bool over_lora)
 {
     for (int i = 0; i < TXQ_LEN; i++) {
         tx_item_t *t = &s_txq[i];
-        if (t->used && t->is_relay && !t->late && t->from == from && t->id == id) {
+        if (!t->used || !t->is_relay || t->from != from || t->id != id) continue;
+        if (!t->keep) {
+            if (!over_lora) return false;
             t->used = false;
             return true;
         }
+        if (t->to_late) {
+            /* The late window opens after every client's slot (Meshtastic clampToLateRebroadcastWindow). */
+            t->not_before = now_ms() + (int64_t)(2 * 8 + (1u << t->cw)) * mesh_slot_ms(s_preset);
+            t->to_late = false;
+        }
+        return false;
     }
     return false;
 }
@@ -663,7 +717,7 @@ static esp_err_t send_data(uint32_t to, int ch_idx, const mt_data_t *d_in, bool 
         .flags = mt_make_flags(hop_limit, hop_limit, want_ack),
         .channel = pki ? 0 : s_ch[ch_idx].hash,
         .next_hop = peer ? peer->next_hop : 0,
-        .relay_node = (uint8_t)(s_me & 0xff),
+        .relay_node = last_byte(s_me),
     };
     mt_header_write(&h, t->buf);
     size_t plen;
@@ -701,7 +755,7 @@ static esp_err_t send_data_as(uint32_t from, uint32_t id, uint32_t to, int ch_id
     if (!t) return ESP_ERR_NO_MEM;
     node_t *peer = node_get(to, false);
     mt_header_t h = {.to = to, .from = from, .id = id, .flags = mt_make_flags(s_cfg.hop_limit, s_cfg.hop_limit, false),
-                     .channel = s_ch[ch_idx].hash, .next_hop = peer ? peer->next_hop : 0, .relay_node = (uint8_t)(s_me & 0xff)};
+                     .channel = s_ch[ch_idx].hash, .next_hop = peer ? peer->next_hop : 0, .relay_node = last_byte(s_me)};
     mt_header_write(&h, t->buf);
     memcpy(t->buf + MESH_HEADER_LEN, plain, n);
     channel_crypt(&s_ch[ch_idx], from, id, t->buf + MESH_HEADER_LEN, n);
@@ -1540,6 +1594,14 @@ static void handle_admin(const mt_header_t *h, int ch, bool pki, const mt_data_t
         node_t *nn = node_get(r->contact_num, true);
         if (nn) {
             nn->flags |= NF_USER;
+            /* Meshtastic: a shared contact becomes a favourite so it is not evicted, except on a CLIENT_BASE, where
+             * favourites decide what it always relays; there it only counts as just heard. */
+            if (s_cfg.mx.role == EDGE_ROLE_CLIENT_BASE) {
+                nn->last_heard_up = now_ms();
+                nn->last_heard_s = now_unix_s();
+            } else {
+                nn->flags |= NF_FAV;
+            }
             edge_strlcpy(nn->long_name, r->contact_long, sizeof(nn->long_name));
             edge_strlcpy(nn->short_name, r->contact_short, sizeof(nn->short_name));
             nn->hw_model = (uint8_t)r->contact_hw;
@@ -2022,7 +2084,7 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
     }
     if (seen_find(h.from, h.id)) {
         s_st.rx_dupe++;
-        if (txq_cancel_relay(h.from, h.id)) s_st.relay_cancelled++;
+        if (txq_heard_relay(h.from, h.id, !s_rx_from_mqtt)) s_st.relay_cancelled++;
         return;
     }
     seen_t *seen = seen_add(h.from, h.id, h.to);
@@ -2092,7 +2154,7 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
     if (relay && mode == EDGE_REBROADCAST_KNOWN_ONLY) relay = n && (n->flags & NF_USER);
     if (relay && mode == EDGE_REBROADCAST_CORE_PORTNUMS_ONLY) relay = decoded && core_port(d.portnum);
     /* Next-hop routing: when another node is the designated relay, stay quiet. */
-    uint8_t my_byte = (uint8_t)(s_me & 0xff);
+    uint8_t my_byte = last_byte(s_me);
     if (relay && h.next_hop && h.next_hop != my_byte) relay = false;
     if (!relay) return;
 
@@ -2105,7 +2167,8 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
         channel_crypt(&s_ch[ch_idx], h.from, h.id, t->buf + MESH_HEADER_LEN, relay_len);
         t->len = (uint8_t)(MESH_HEADER_LEN + relay_len);
     }
-    t->buf[12] = (uint8_t)((h.flags & ~MT_FLAG_HOP_LIMIT_MASK) | ((mt_hop_limit(&h) - 1) & MT_FLAG_HOP_LIMIT_MASK));
+    uint8_t hops = (uint8_t)(mt_hop_limit(&h) - (keeps_hop_limit(&h) ? 0 : 1));
+    t->buf[12] = (uint8_t)((h.flags & ~MT_FLAG_HOP_LIMIT_MASK) | (hops & MT_FLAG_HOP_LIMIT_MASK));
     node_t *dest = node_get(h.to, false);
     t->buf[14] = (h.next_hop == my_byte && dest) ? dest->next_hop : 0; /* hand over to our known next hop */
     t->buf[15] = my_byte;
@@ -2119,11 +2182,15 @@ static void process_rx(uint8_t *buf, size_t len, int16_t rssi, float snr)
     float s = snr < -20 ? -20 : snr > 10 ? 10 : snr;
     uint32_t cw = 3 + (uint32_t)((s + 20) * 5 / 30); /* 3..8 */
     int64_t base = now_ms();
+    /* Meshtastic 2.7: ROUTER relays early and is never cancelled. ROUTER_LATE, and CLIENT_BASE for a packet from or
+     * to a favourite, relay in the client window, are never cancelled, and move to the late window when another node
+     * relays first. Every other relay is cancelled when another node relays first. */
+    bool late = role == EDGE_ROLE_ROUTER_LATE || (role == EDGE_ROLE_CLIENT_BASE && favourite_packet(h.from, h.to));
+    t->keep = role == EDGE_ROLE_ROUTER || late;
+    t->to_late = late;
+    t->cw = (uint8_t)cw;
     if (role == EDGE_ROLE_ROUTER || role == EDGE_ROLE_REPEATER) {
         t->not_before = base + rnd(2 * cw) * slot;
-    } else if (role == EDGE_ROLE_ROUTER_LATE) {
-        t->not_before = base + 2 * 8 * slot + (1u << 8) * slot + rnd(1u << cw) * slot;
-        t->late = true;
     } else {
         t->not_before = base + 2 * 8 * slot + rnd(1u << cw) * slot;
     }
@@ -2369,6 +2436,13 @@ static void apply_config(void)
     s_region = mesh_region_by_code(s_cfg.region);
     s_preset = mesh_preset_by_code(s_cfg.preset);
     if (!s_preset) s_preset = mesh_preset_by_code(0);
+    /* A preset wider than the band (a 500 kHz preset in EU_868) would transmit outside it: use LONG_FAST, as
+     * Meshtastic does. The setting is kept, so it applies again after a region change. */
+    s_preset_too_wide = s_region && !mesh_preset_fits(s_region, s_preset);
+    if (s_preset_too_wide) {
+        ESP_LOGW(TAG, "%s is wider than the %s band: using LongFast", s_preset->display, s_region->name);
+        s_preset = mesh_preset_by_code(0);
+    }
     s_nch = s_cfg.n_channels;
     for (int i = 0; i < s_nch; i++) {
         const edge_mesh_channel_t *c = &s_cfg.channels[i];
@@ -3048,6 +3122,10 @@ cJSON *mesh_status_json(void)
         cJSON_AddNullToObject(o, "region");
     }
     if (s_preset) cJSON_AddStringToObject(o, "preset", s_preset->name);
+    if (s_preset_too_wide) {
+        const mesh_preset_t *want = mesh_preset_by_code(s_cfg.preset);
+        if (want) cJSON_AddStringToObject(o, "preset_too_wide", want->name);
+    }
     if (s_running) {
         cJSON_AddNumberToObject(o, "channel_util_pct", round(channel_util_pct() * 10) / 10);
         cJSON_AddNumberToObject(o, "air_util_tx_pct", round(air_util_tx_pct() * 100) / 100);
@@ -3123,12 +3201,25 @@ cJSON *mesh_status_json(void)
 
 cJSON *mesh_nodes_json(void)
 {
+    int total, next;
+    return mesh_nodes_page_json(0, MAX_NODES, &total, &next);
+}
+
+cJSON *mesh_nodes_page_json(int offset, int limit, int *total, int *next)
+{
+    if (offset < 0) offset = 0;
+    if (limit < 1 || limit > MAX_NODES) limit = MAX_NODES;
     cJSON *a = cJSON_CreateArray();
+    int k = 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (int i = 0; s_nodes && i < MAX_NODES; i++) {
-        if (s_nodes[i].num) cJSON_AddItemToArray(a, node_json(&s_nodes[i]));
+        if (!s_nodes[i].num) continue;
+        if (k >= offset && k < offset + limit) cJSON_AddItemToArray(a, node_json(&s_nodes[i]));
+        k++;
     }
     xSemaphoreGive(s_lock);
+    *total = k;
+    *next = offset + limit < k ? offset + limit : -1;
     return a;
 }
 

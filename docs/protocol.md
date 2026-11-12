@@ -148,6 +148,7 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `mesh_tak_chat` | `text` (1-200 bytes), `channel` | sends TAK GeoChat to all chat rooms (TAKPacketV2, port 78) |
 | `mesh_tak_position` | `channel` | sends our position as a TAK position report; error when there is no position or the channel's precision is 0 |
 | `mesh_nodes` / `mesh_messages` / `mesh_status` | | node table (up to 64, with key, favourite, ignored, device and environment telemetry, neighbours, reported position) / last 32 messages (with `pki`, `reply_id`, `reaction`) / radio state, role, public key, channel use and own airtime, polite hold, store & forward routers heard, paxcounter counts, `admin` (mode, requests, refused), `store_forward_server` (stored, capacity, who it is sending to), `mqtt` (state, broker, uplinked, downlinked, last error), counters |
+| `mesh_nodes` with paging | optional `offset` (default 0), optional `limit` (1-64, default 64) | With either parameter: one page of `nodes` in table order, plus `total` and `next` (offset of the next page, `null` on the last), as `live` pages. Without both, the whole table exactly as above. A node first heard between two pages can shift later pages by one. Needs `caps.mesh_nodes_paging`. |
 | `mesh_new_identity` | | new random `node_id` and a new key pair |
 | `regions` | | region and preset names |
 | `ctx_get` / `ctx_set` | `ctx`: object (≤ 2 KB) | Context-page settings, stored on the Edge as an opaque JSON object owned by the web app (area rounded to 0.1°, enabled sources) |
@@ -390,12 +391,12 @@ Static for a boot, so it is safe for long BLE reads:
 
 ```json
 {"protocol":1,"device_id":"9f3c…","name":"Sotreus Edge","vendor":"NetSepio LLC",
- "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.2.0",
+ "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.3.0",
  "idf":"v6.0.1","hw":"heltec_wifi_lora_32_v3","boot":12,"record_size":256,"record_format":1,
  "probe_salt":"…","caps":{"ble_observation":true,"wifi24_observation":true,
  "wifi_probe_observation":true,"gnss":false,"local_storage":true,"firmware_switching":false,
  "meshtastic_mode":true,"lora":true,"display":true,"battery":true,"ota_upload":true,
- "live_sightings":true,"placement":true,"ble_full_size":true}}
+ "live_sightings":true,"placement":true,"ble_full_size":true,"mesh_nodes_paging":true}}
 ```
 
 `firmware_switching` is false because mesh mode is built in. It is not a
@@ -454,9 +455,17 @@ write-only: send `password` to change it; reads show `password_set`.
   `lat`, `lon` and `accuracy_m` go together; `"lat": null` clears the position. Without a
   position the object has only `mode`. Needs `caps.placement`.
 * `mesh.region` is a Meshtastic region name, or `UNSET`. While it is
-  `UNSET`, the radio never transmits.
+  `UNSET`, the radio never transmits. The regions match Meshtastic 2.7 on
+  sub-GHz: `US`, `EU_433`, `EU_868`, `CN`, `JP`, `ANZ`, `KR`, `TW`, `RU`, `IN`,
+  `NZ_865`, `TH`, `UA_433`, `UA_868`, `MY_433`, `MY_919`, `SG_923`, `PH_433`,
+  `PH_868`, `PH_915`, `ANZ_433`, `KZ_433`, `KZ_863`, `NP_865` and `BR_902`
+  (`regions` lists them). `LORA_24` needs a 2.4 GHz radio.
 * `mesh.preset` is one of `LONG_FAST`, `LONG_SLOW`, `LONG_MODERATE`,
-  `MEDIUM_SLOW`, `MEDIUM_FAST`, `SHORT_SLOW`, `SHORT_FAST` or `SHORT_TURBO`.
+  `LONG_TURBO`, `MEDIUM_SLOW`, `MEDIUM_FAST`, `SHORT_SLOW`, `SHORT_FAST` or
+  `SHORT_TURBO`. A preset wider than the region's band (the 500 kHz
+  `LONG_TURBO` and `SHORT_TURBO` in `EU_868`) is kept as set but the radio uses
+  `LONG_FAST`, as Meshtastic does; `status.mesh` (and `mesh_status`) then
+  name the set preset in `preset_too_wide`, and `preset` is the one in use.
 * A channel `psk` is `default` (Meshtastic `AQ==`), `none`, `simpleN`, or
   `base64:<16 or 32 bytes>`. An empty primary channel name means the preset
   name (`LongFast`), which matches Meshtastic's public default channel. Up to
@@ -466,8 +475,16 @@ write-only: send `password` to change it; reads show `password_set`.
   default-key channel).
 * `rebroadcast` is `all`, `all_skip_decoding`, `local_only`, `known_only`,
   `none` or `core_portnums_only`. `role` is a Meshtastic role name
-  (`CLIENT`, `CLIENT_MUTE`, `CLIENT_HIDDEN`, `ROUTER`, `ROUTER_LATE`,
-  `REPEATER`, `TRACKER`, `TAK`, `TAK_TRACKER`, `SENSOR`, `LOST_AND_FOUND`).
+  (`CLIENT`, `CLIENT_MUTE`, `CLIENT_HIDDEN`, `CLIENT_BASE`, `ROUTER`,
+  `ROUTER_LATE`, `REPEATER`, `TRACKER`, `TAK`, `TAK_TRACKER`, `SENSOR`,
+  `LOST_AND_FOUND`). Relaying follows Meshtastic 2.7: `ROUTER` relays early
+  and always; `ROUTER_LATE` relays in the client window and always, moving to
+  the late window when another node relays first; `CLIENT_BASE` does the same
+  for packets from or to a favourite and relays the rest like `CLIENT`. A
+  `ROUTER`, `ROUTER_LATE` or `CLIENT_BASE` keeps the hop limit when the node
+  that just relayed is a favourite with one of those roles (never on the first
+  hop). A contact added by remote admin becomes a favourite, except on a
+  `CLIENT_BASE`.
 * `position.mode` is `off`, `fixed` (with `lat`, `lon`, `alt`) or `client`
   (the phone hands it over with `mesh_set_position`). The Edge has no GNSS.
 * `licensed: true` turns off all encryption (amateur radio rules); the long
@@ -499,7 +516,9 @@ Covered:
   Direct messages to and from nodes whose key is known use
   `SHA-256(X25519)` keys and AES-CCM (8-byte tag, 4-byte extra nonce).
 * **Routing.** Managed flooding with Meshtastic's SNR-weighted contention
-  window, next-hop learning from ACKs, all roles and rebroadcast modes, the
+  window, next-hop learning from ACKs, every 2.7 role (including
+  `CLIENT_BASE`) and rebroadcast mode, hop limits kept between favourite
+  routers, the
   ignore list, duty-cycle limits and a polite hold while channel use is above
   25 % or own airtime is above half the limit.
 * **Node info, position and telemetry.** Node info with key and role,
@@ -563,6 +582,21 @@ Not covered:
 * Custom LoRa modem parameters (bandwidth, spreading factor, coding rate
   outside the presets), OTA over the mesh, files, displays and sensors the
   Heltec V3 does not have.
+* Radio settings that exist only in the Meshtastic 2.8 pre-releases: the
+  `LITE_*`, `NARROW_*`, `TINY_*` and `MEDIUM_TURBO` presets, the `EU_866`,
+  `EU_N_868` and ITU amateur-radio regions, and 2.8's per-region preset lists.
+* Newer Meshtastic features: XEdDSA packet signatures and the signature
+  policy, key verification (port 12), status messages (port 36), mesh beacons
+  (37), paging (38), critical alerts (port 11), ack proofs, waypoint geofence
+  alerts, and telemetry other than device metrics (air quality, power,
+  health, local stats). The status message and traffic management module
+  settings are accepted but have no effect. No `PKI_UNKNOWN_PUBKEY` error is
+  sent when a direct message cannot be decrypted.
+* Partly covered: the serial bridge has text mode only; notifications drive
+  the LED or one GPIO (no buzzer, vibration or ringtone); no power saving,
+  smart position broadcast, external GPS or I2C sensors; no NTP server
+  choice, static IP, syslog or mesh over local Wi-Fi; no settings backup or
+  restore; "mute node" is accepted but has no effect.
 
 Its node number is random, not derived from a hardware address.
 

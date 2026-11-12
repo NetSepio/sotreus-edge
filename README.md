@@ -247,6 +247,12 @@ Meshtastic's session keys), and it can act as an MQTT gateway and a store &
 forward server. [docs/protocol.md](docs/protocol.md) section 7 lists exactly
 what is covered.
 
+Regions, modem presets and device roles match the stable Meshtastic release
+(2.7): every sub-GHz region (up to `BR_902`), the presets up to `LONG_TURBO`,
+and the `CLIENT_BASE` role, with 2.7's relay rules. A preset wider than the
+region's band falls back to `LONG_FAST`, as in Meshtastic, and the status
+says so.
+
 Not included:
 
 * **The Meshtastic phone API** (Bluetooth / TCP `ToRadio`/`FromRadio`), so the
@@ -256,6 +262,12 @@ Not included:
 * **Audio.** The settings exist (and can be set remotely), but voice is
   neither sent nor played: the Heltec V3 has no microphone, speaker or I2S
   codec, and the codec2 library is not built in yet.
+* **Radio settings only in the Meshtastic 2.8 pre-releases:** the `LITE`,
+  `NARROW`, `TINY` and `MEDIUM_TURBO` presets and the `EU_866`, `EU_N_868` and
+  amateur-radio (ITU) regions. They follow once 2.8 is a stable release.
+* **Newer Meshtastic features:** packet signatures, key verification, status
+  messages, mesh beacons, paging, critical alerts, and telemetry other than
+  device metrics. Section 7 of the protocol lists the rest.
 
 ### ATAK
 
@@ -339,18 +351,25 @@ Verified on a board:
 * LoRa with region IN (LongFast, 865.875 MHz, 22 dBm): the radio tunes,
   transmits its node info, and returns to receive. Noise floor on the
   channel is about -108 dBm.
+* Mesh radio settings, receive only (transmit off): IN `LONG_TURBO` tunes to
+  865.750 MHz; `LONG_TURBO` in `EU_868` falls back to `LongFast` at
+  869.525 MHz and `status.mesh.preset_too_wide` names it; the `CLIENT_BASE`
+  role is taken and an unknown role is refused.
+* Bluetooth pairing, live hand-off and sync with a phone (Solana Seeker,
+  Android 16): records arrive live, unconfirmed ones are written to flash and
+  come back by `sync`, and a planned restart loses none.
 
 Not yet verified:
 
-* Bluetooth pairing and sync with a phone
 * The setup page and HTTP/WebSocket API from a browser, including the
   captive-portal sheet on iOS and Android, and the channel-by-channel scan
   while a phone is connected to the access point
 * Anything that needs another Meshtastic node in range: receiving and
   decoding, PKI direct messages both ways, ACKs, traceroute replies, store &
   forward requests, remote admin and remote hardware from a Meshtastic app,
-  and a stock node listing the Edge. No LoRa traffic was in range
-  during testing. The crypto and protobuf code passes known-answer tests on
+  relaying by role (`ROUTER`, `ROUTER_LATE`, `CLIENT_BASE`) and hop limits
+  kept between favourite routers, and a stock node listing the Edge. No LoRa
+  traffic was in range during testing. The crypto and protobuf code passes known-answer tests on
   the host (RFC 7748, FIPS-197, RFC 3610 vectors, Meshtastic channel
   links, and AdminMessage / ServiceEnvelope / StoreAndForward round trips).
 * The Context relay on Cloudflare itself. Its code was run locally under

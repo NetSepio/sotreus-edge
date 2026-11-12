@@ -369,7 +369,7 @@ static void set_device(const uint8_t *p, size_t n, edge_config_t *c)
         if (f.field == 6) rb = (uint32_t)f.v;
         if (f.field == 7) ni = (uint32_t)f.v;
     }
-    if (role <= 11 && role != 3) c->mx.role = (uint8_t)role;
+    if (role <= 12 && role != 3) c->mx.role = (uint8_t)role;
     if (rb <= 5) c->rebroadcast = (uint8_t)rb;
     c->nodeinfo_interval_s = ni ? ni : 10800;
 }

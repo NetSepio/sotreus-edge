@@ -49,6 +49,8 @@ const mesh_preset_t *mesh_preset_at(size_t i);
 uint32_t mesh_djb2(const char *s);
 uint8_t mesh_xor_hash(const uint8_t *p, size_t n);
 
+/** False when the preset's bandwidth is wider than the region's band; Meshtastic then uses LONG_FAST instead. */
+bool mesh_preset_fits(const mesh_region_t *r, const mesh_preset_t *p);
 uint32_t mesh_num_channels(const mesh_region_t *r, const mesh_preset_t *p);
 /** channel_num: 0 = slot from hash(channel_name), else 1-based slot. */
 uint32_t mesh_channel_slot(const mesh_region_t *r, const mesh_preset_t *p, const char *channel_name,

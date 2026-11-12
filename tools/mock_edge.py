@@ -93,9 +93,9 @@ STATE = {
             {"node": "!a1b2c3d4", "callsign": "", "uid": "", "team": "", "role": "", "plugin": "v2", "compressed": True, "ago_s": 300}],
 }
 REGIONS = ["US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU", "IN", "NZ_865", "TH", "UA_433", "UA_868",
-           "MY_433", "MY_919", "SG_923"]
+           "MY_433", "MY_919", "SG_923", "PH_433", "PH_868", "PH_915", "ANZ_433", "KZ_433", "KZ_863", "NP_865", "BR_902"]
 PRESETS = ["LONG_FAST", "LONG_SLOW", "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "LONG_MODERATE",
-           "SHORT_TURBO"]
+           "SHORT_TURBO", "LONG_TURBO"]
 
 
 def deep_merge(dst, src):
@@ -235,13 +235,14 @@ def handle_cmd(req, args):
     if c == "info":
         return {**ok, "info": {"protocol": 1, "device_id": "9f3c00aa11bb22cc", "name": "Sotreus Edge", "vendor": "NetSepio LLC",
                                "vendor_url": "https://netsepio.com", "product_url": "https://sotreus.com",
-                               "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.2.0", "idf": "v6.0.1",
+                               "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.3.0", "idf": "v6.0.1",
                                "hw": "heltec_wifi_lora_32_v3", "boot": 9, "record_size": 256, "record_format": 1,
                                "probe_salt": "00",
                                "caps": {"ble_observation": True, "wifi24_observation": True, "wifi_probe_observation": True,
                                         "gnss": False, "local_storage": True, "firmware_switching": False,
                                         "meshtastic_mode": True, "lora": True, "display": True, "battery": True,
-                                        "ota_upload": True, "live_sightings": True, "placement": True}}}
+                                        "ota_upload": True, "live_sightings": True, "placement": True,
+                                        "ble_full_size": True, "mesh_nodes_paging": True}}}
     if c == "status":
         return {**ok, "status": status(args)}
     if c == "live":
@@ -289,7 +290,14 @@ def handle_cmd(req, args):
     if c == "mesh_status":
         return {**ok, "mesh": status(args)["mesh"]}
     if c == "mesh_nodes":
-        return {**ok, "nodes": STATE["nodes"]}
+        if "offset" not in req and "limit" not in req:
+            return {**ok, "nodes": STATE["nodes"]}
+        off = max(int(req.get("offset", 0)), 0)
+        lim = int(req.get("limit", 64))
+        lim = lim if 1 <= lim <= 64 else 64
+        nodes = STATE["nodes"]
+        return {**ok, "nodes": nodes[off:off + lim], "total": len(nodes),
+                "next": off + lim if off + lim < len(nodes) else None}
     if c == "mesh_messages":
         return {**ok, "messages": STATE["messages"]}
     if c == "sync_confirm":

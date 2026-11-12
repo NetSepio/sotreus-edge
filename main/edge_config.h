@@ -47,6 +47,7 @@ typedef enum {
     EDGE_ROLE_LOST_AND_FOUND = 9,
     EDGE_ROLE_TAK_TRACKER = 10,
     EDGE_ROLE_ROUTER_LATE = 11,
+    EDGE_ROLE_CLIENT_BASE = 12, /* relays like ROUTER_LATE for favourites, like CLIENT for the rest */
 } edge_role_t;
 
 typedef enum {
