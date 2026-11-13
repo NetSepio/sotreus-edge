@@ -109,6 +109,15 @@ PHY and data-length changes.
 
 A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 `{"ev":"resp","id":...,"ok":true,...}` or `{"ev":"resp","ok":false,"error":"..."}`.
+Over Bluetooth, the WebSocket and the serial console, `id` is echoed on every response,
+errors included; `POST /api/cmd` returns the response directly and does not echo it.
+
+`id` is only the request id. Before `caps.mesh_target_fields`, `mesh_node` read its
+node from `id` and `mesh_waypoint` read the waypoint to update from `id`, so a request
+id there named a node or overwrote a waypoint. With the cap, send the target as `node` /
+`waypoint_id` instead. The Edge still reads `id` as the target when the new field is
+missing, for older clients, so a client sending a request id to these two commands
+should always send the new field too (`waypoint_id: 0` for a new waypoint).
 
 | cmd | Parameters | Result |
 |---|---|---|
@@ -137,12 +146,12 @@ A request is `{"cmd":"<name>", "id":<optional, echoed>, ...}`. A response is
 | `mesh_canned` | `index` | sends that quick message on the primary channel; `packet_id` |
 | `mesh_traceroute` | `to`, `channel` | `packet_id`; the route arrives as a `mesh_traceroute` event |
 | `mesh_request_position` | `to`, `channel` | asks the node for its position |
-| `mesh_waypoint` | `lat`, `lon`, `name`, optional `description`, `expire_unix_s`, `icon`, `id` (to update), `channel` | `waypoint_id` |
+| `mesh_waypoint` | `lat`, `lon`, `name`, optional `description`, `expire_unix_s`, `icon`, `waypoint_id` (to update; 0 or absent for a new one; `id` before `caps.mesh_target_fields`), `channel` | `waypoint_id` |
 | `mesh_waypoints` | | `waypoints` received or sent (up to 16) |
 | `mesh_store_forward` | optional `router`, `channel` | asks a store & forward router for missed channel messages; error if none was heard |
 | `mesh_send_nodeinfo` | | sends node info now |
 | `mesh_set_position` | `lat`, `lon`, optional `alt` | the position used in `client` position mode (from the phone) |
-| `mesh_node` | `id`, optional `favorite`, optional `ignored` | ignoring also adds the node to `mesh.ignore` in config |
+| `mesh_node` | `node` (`!hex` or number; `id` before `caps.mesh_target_fields`), optional `favorite`, optional `ignored`, optional `remove: true` | ignoring also adds the node to `mesh.ignore` in config. `remove: true` drops the node from the table (name, key, telemetry, position, favourite) and it is added again when next heard; `favorite` is then ignored, while `ignored` still updates `mesh.ignore`. Removal needs Mesh mode running and `caps.mesh_node_remove`; errors: `mesh is not running`, `node not found`, `this is the Edge's own node`. |
 | `mesh_channel_url` | optional `url`, optional `replace` (default true) | `url`: the channels as a Meshtastic link (`https://meshtastic.org/e/#…`). With `url`, applies a link first: `replace` swaps all channels and the LoRa preset, region and hop limit; otherwise its channels are added. |
 | `mesh_tak` | | `tak`: ATAK users heard (callsign, uid, team, role, battery, plugin `v1`/`v2`, `compressed`, `reported_position`, `ago_s`) |
 | `mesh_tak_chat` | `text` (1-200 bytes), `channel` | sends TAK GeoChat to all chat rooms (TAKPacketV2, port 78) |
@@ -391,12 +400,13 @@ Static for a boot, so it is safe for long BLE reads:
 
 ```json
 {"protocol":1,"device_id":"9f3c…","name":"Sotreus Edge","vendor":"NetSepio LLC",
- "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.3.0",
+ "vendor_url":"https://netsepio.com","product_url":"https://sotreus.com","mdns_host":"sotreus-1a2b.local","suffix":"1A2B","fw":"0.3.1",
  "idf":"v6.0.1","hw":"heltec_wifi_lora_32_v3","boot":12,"record_size":256,"record_format":1,
  "probe_salt":"…","caps":{"ble_observation":true,"wifi24_observation":true,
  "wifi_probe_observation":true,"gnss":false,"local_storage":true,"firmware_switching":false,
  "meshtastic_mode":true,"lora":true,"display":true,"battery":true,"ota_upload":true,
- "live_sightings":true,"placement":true,"ble_full_size":true,"mesh_nodes_paging":true}}
+ "live_sightings":true,"placement":true,"ble_full_size":true,"mesh_nodes_paging":true,"mesh_node_remove":true,
+ "mesh_target_fields":true}}
 ```
 
 `firmware_switching` is false because mesh mode is built in. It is not a

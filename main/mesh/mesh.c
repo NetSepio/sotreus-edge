@@ -3066,6 +3066,27 @@ esp_err_t mesh_node_flags(uint32_t num, int favorite, int ignored)
     return n ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t mesh_node_remove(uint32_t num)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t e = ESP_OK;
+    if (!s_running || !s_nodes) {
+        e = ESP_ERR_INVALID_STATE;
+    } else if (num == s_me) {
+        e = ESP_ERR_INVALID_ARG;
+    } else {
+        node_t *n = node_get(num, false);
+        if (n) {
+            memset(n, 0, sizeof(*n)); /* frees the slot, as Meshtastic's remove_by_nodenum does */
+            s_dirty = true;
+        } else {
+            e = ESP_ERR_NOT_FOUND;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return e;
+}
+
 void mesh_get_summary(mesh_summary_t *o)
 {
     memset(o, 0, sizeof(*o));

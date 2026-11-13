@@ -56,6 +56,8 @@ esp_err_t mesh_send_nodeinfo_now(void);
 void mesh_set_client_position(int32_t lat_i, int32_t lon_i, int32_t alt);
 /** favorite / ignored: 1 set, 0 clear, -1 unchanged. */
 esp_err_t mesh_node_flags(uint32_t num, int favorite, int ignored);
+/** Drops a node from the table (it returns if heard again). INVALID_STATE: mesh not running; INVALID_ARG: this Edge. */
+esp_err_t mesh_node_remove(uint32_t num);
 /** Writes the node list and messages to flash now (before a restart). */
 void mesh_save_now(void);
 

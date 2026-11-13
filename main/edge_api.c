@@ -232,6 +232,8 @@ cJSON *edge_api_info_json(void)
     cJSON_AddTrueToObject(caps, "placement");      /* config.placement */
     cJSON_AddTrueToObject(caps, "ble_full_size");  /* `ble_link` command */
     cJSON_AddTrueToObject(caps, "mesh_nodes_paging"); /* `mesh_nodes` takes offset/limit */
+    cJSON_AddTrueToObject(caps, "mesh_node_remove");  /* `mesh_node` takes remove:true */
+    cJSON_AddTrueToObject(caps, "mesh_target_fields"); /* `mesh_node` takes `node`, `mesh_waypoint` takes `waypoint_id` */
     return o;
 }
 
@@ -1340,7 +1342,12 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         if (jstr(req, "description")) edge_strlcpy(w.description, jstr(req, "description"), sizeof(w.description));
         if (jnum(req, "expire_unix_s", &n)) w.expire = (uint32_t)n;
         if (jnum(req, "icon", &n)) w.icon = (uint32_t)n;
-        if (jnum(req, "id", &n)) w.id = (uint32_t)n;
+        /* `waypoint_id` (0 = new); `id` only for older clients, since `id` is also the echoed request id */
+        const char *wk = cJSON_GetObjectItemCaseSensitive(req, "waypoint_id") ? "waypoint_id" : "id";
+        if (jnum(req, wk, &n)) {
+            if (n < 0 || n > 4294967295.0) return err_resp("bad waypoint_id");
+            w.id = (uint32_t)n;
+        }
         uint32_t id = 0;
         if (mesh_send_waypoint(&w, jnum(req, "channel", &n) ? (uint8_t)n : 0, &id) != ESP_OK) return err_resp("mesh is not running");
         r = ok_resp();
@@ -1367,9 +1374,19 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
         r = ok_resp();
     } else if (strcmp(cmd, "mesh_node") == 0) {
         uint32_t num;
-        if (!parse_node(cJSON_GetObjectItemCaseSensitive(req, "id"), &num) || num == MT_BROADCAST) return err_resp("bad node id");
+        /* `node`; `id` only for older clients, since `id` is also the echoed request id */
+        const cJSON *nv = cJSON_GetObjectItemCaseSensitive(req, "node");
+        if (!nv) nv = cJSON_GetObjectItemCaseSensitive(req, "id");
+        if (!parse_node(nv, &num) || num == MT_BROADCAST) return err_resp("bad node id");
         int fav = jbool(req, "favorite", &b) ? (b ? 1 : 0) : -1;
         int ign = jbool(req, "ignored", &b) ? (b ? 1 : 0) : -1;
+        bool remove = jbool(req, "remove", &b) && b;
+        if (remove) { /* first, so a refused removal changes nothing */
+            esp_err_t e = mesh_node_remove(num);
+            if (e == ESP_ERR_INVALID_STATE) return err_resp("mesh is not running");
+            if (e == ESP_ERR_INVALID_ARG) return err_resp("this is the Edge's own node");
+            if (e != ESP_OK) return err_resp("node not found");
+        }
         if (ign >= 0) { /* the ignore list lives in settings so it survives restarts */
             edge_config_t *c = malloc(sizeof(*c));
             if (!c) return err_resp("out of memory");
@@ -1384,7 +1401,7 @@ cJSON *edge_api_handle(const cJSON *req, edge_sink_t origin, int target)
             free(c);
             mesh_reload();
         }
-        mesh_node_flags(num, fav, ign);
+        if (!remove) mesh_node_flags(num, fav, ign);
         r = ok_resp();
     } else if (strcmp(cmd, "mesh_channel_url") == 0) {
         edge_config_t *c = malloc(sizeof(*c));

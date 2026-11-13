@@ -235,14 +235,16 @@ def handle_cmd(req, args):
     if c == "info":
         return {**ok, "info": {"protocol": 1, "device_id": "9f3c00aa11bb22cc", "name": "Sotreus Edge", "vendor": "NetSepio LLC",
                                "vendor_url": "https://netsepio.com", "product_url": "https://sotreus.com",
-                               "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.3.0", "idf": "v6.0.1",
+                               "mdns_host": "sotreus-96ff.local", "suffix": "96FF", "fw": "0.3.1", "idf": "v6.0.1",
                                "hw": "heltec_wifi_lora_32_v3", "boot": 9, "record_size": 256, "record_format": 1,
                                "probe_salt": "00",
                                "caps": {"ble_observation": True, "wifi24_observation": True, "wifi_probe_observation": True,
                                         "gnss": False, "local_storage": True, "firmware_switching": False,
                                         "meshtastic_mode": True, "lora": True, "display": True, "battery": True,
                                         "ota_upload": True, "live_sightings": True, "placement": True,
-                                        "ble_full_size": True, "mesh_nodes_paging": True}}}
+                                        "ble_full_size": True, "mesh_nodes_paging": True,
+                                        "mesh_node_remove": True,
+                                        "mesh_target_fields": True}}}
     if c == "status":
         return {**ok, "status": status(args)}
     if c == "live":
@@ -331,19 +333,33 @@ def handle_cmd(req, args):
     if c in ("mesh_traceroute", "mesh_request_position", "mesh_send_nodeinfo", "mesh_set_position", "mesh_store_forward"):
         return {**ok, "packet_id": 1236} if c == "mesh_traceroute" else ok
     if c == "mesh_waypoint":
-        STATE["next_id"] += 1
-        STATE["waypoints"].append({"id": STATE["next_id"], "from": cfg["mesh"]["node_id"], "name": req.get("name", "Waypoint"),
+        wid = int(req["waypoint_id"] if "waypoint_id" in req else req.get("id", 0))  # `id` only for older clients
+        STATE["waypoints"] = [w for w in STATE["waypoints"] if not wid or w["id"] != wid]
+        if not wid:
+            STATE["next_id"] += 1
+            wid = STATE["next_id"]
+        STATE["waypoints"].append({"id": wid, "from": cfg["mesh"]["node_id"], "name": req.get("name", "Waypoint"),
                                    "description": req.get("description", ""), "lat": req["lat"], "lon": req["lon"],
                                    "expire_unix_s": req.get("expire_unix_s", 0), "icon": 0, "unix_s": int(time.time()), "provenance": "NETWORK"})
-        return {**ok, "waypoint_id": STATE["next_id"]}
+        return {**ok, "waypoint_id": wid}
     if c == "mesh_node":
-        n = node_by_id(req.get("id"))
+        nid = req["node"] if "node" in req else req.get("id")  # `id` only for older clients
+        n = node_by_id(nid)
+        if req.get("remove") is True:
+            if not mesh_on:
+                return {"ev": "resp", "ok": False, "error": "mesh is not running"}
+            if nid == cfg["mesh"]["node_id"]:
+                return {"ev": "resp", "ok": False, "error": "this is the Edge's own node"}
+            if not n:
+                return {"ev": "resp", "ok": False, "error": "node not found"}
+            STATE["nodes"].remove(n)
+            n = None
         if req.get("favorite") is not None and n:
             n["favorite"] = bool(req["favorite"])
         if req.get("ignored") is not None:
-            ig = [x for x in cfg["mesh"]["ignore"] if x != req["id"]]
+            ig = [x for x in cfg["mesh"]["ignore"] if x != nid]
             if req["ignored"]:
-                ig.append(req["id"])
+                ig.append(nid)
             cfg["mesh"]["ignore"] = ig
             if n:
                 n["ignored"] = bool(req["ignored"])

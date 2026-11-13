@@ -990,8 +990,13 @@ function nodeDialog(n) {
   mk("Message", () => { $("#msgTo").value = n.id; $("#msgText").focus(); });
   mk("Route check", async () => { if (await run({ cmd: "mesh_traceroute", to: n.id, channel: +$("#msgCh").value }, "Route check sent. Results appear when it returns.")) { S.traces.unshift({ to: n.id, at: Date.now(), pending: true }); renderTraces(); } });
   mk("Ask for position", () => run({ cmd: "mesh_request_position", to: n.id, channel: +$("#msgCh").value }, "Asked. The node answers if it shares its position."));
-  mk(n.favorite ? "Remove favourite" : "Favourite", async () => { if (await run({ cmd: "mesh_node", id: n.id, favorite: !n.favorite })) refreshMesh(); });
-  mk(n.ignored ? "Stop ignoring" : "Ignore", async () => { if (await run({ cmd: "mesh_node", id: n.id, ignored: !n.ignored }, n.ignored ? "No longer ignored" : "Ignored. Its packets are dropped and not relayed.")) { await fillSettings(); refreshMesh(); } }, n.ignored ? "" : "danger");
+  mk(n.favorite ? "Remove favourite" : "Favourite", async () => { if (await run({ cmd: "mesh_node", node: n.id, favorite: !n.favorite })) refreshMesh(); });
+  mk(n.ignored ? "Stop ignoring" : "Ignore", async () => { if (await run({ cmd: "mesh_node", node: n.id, ignored: !n.ignored }, n.ignored ? "No longer ignored" : "Ignored. Its packets are dropped and not relayed.")) { await fillSettings(); refreshMesh(); } }, n.ignored ? "" : "danger");
+  mk("Remove", async () => {
+    await new Promise((r) => $("#dlg").addEventListener("close", r, { once: true })); /* let this sheet's close event pass first */
+    if (await ask("Remove " + (n.long_name || n.id) + "?", [para("The Edge forgets this node's name, key, telemetry and position. It is added again the next time it is heard.")], "Remove", true) &&
+        await run({ cmd: "mesh_node", node: n.id, remove: true }, "Removed")) refreshMesh();
+  }, "danger");
   const pnote = p ? para("The position is what the node reported over the mesh, not something this Edge measured.") : null;
   ask(n.long_name || n.id, [box, ...(pnote ? [pnote] : []), acts], "Close", false, true);
 }
@@ -1264,7 +1269,7 @@ function renderIgnore(list) {
   $("#ignoreList").replaceChildren(...(list.length ? list.map((id) => {
     const li = el("li", "row"), g = el("div", "grow"), b = el("button", "btn small", "Stop ignoring");
     g.append(el("div", "t", nodeLong(id)), el("div", "s", id));
-    b.onclick = async () => { if (await run({ cmd: "mesh_node", id, ignored: false }, "No longer ignored")) fillSettings(); };
+    b.onclick = async () => { if (await run({ cmd: "mesh_node", node: id, ignored: false }, "No longer ignored")) fillSettings(); };
     li.append(g, b); return li;
   }) : [el("li", "cap", "None. Ignore a node from its details on the Mesh tab.")]));
 }
